@@ -209,7 +209,11 @@ fn ratio_bar(p: &eframe::egui::Painter, rect: Rect, adds: usize, dels: usize) {
 
 fn body(ui: &mut Ui, view: &DiffView) {
     let font = TextStyle::Monospace.resolve(ui.style());
-    let row_h = ui.text_style_height(&TextStyle::Monospace) + 2.0;
+    // Fold the inter-item gap into the row itself and drop the gap, so the
+    // add/del background tints on consecutive lines touch. Text pitch is
+    // unchanged: same total height per row, glyphs centered in it.
+    let row_h = ui.text_style_height(&TextStyle::Monospace) + 2.0 + ui.spacing().item_spacing.y;
+    ui.spacing_mut().item_spacing.y = 0.0;
     let cw = char_w(ui, &font);
     let gutter_w = cw * 2.0 * GUTTER_CHARS + 16.0;
 
