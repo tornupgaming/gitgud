@@ -78,6 +78,11 @@ pub enum Job {
     Push {
         id: RepoId,
     },
+    /// Fast-forwards the current branch from its upstream via the CLI on its
+    /// own thread. Refuses (with git's error) if the branch has diverged.
+    Pull {
+        id: RepoId,
+    },
 }
 
 /// A reply from the worker. `Result<_, String>` is Rust's standard
@@ -119,6 +124,7 @@ pub enum ActionKind {
     Checkout,
     Fetch,
     Push,
+    Pull,
 }
 
 #[derive(Debug, Clone)]

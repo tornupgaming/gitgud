@@ -538,7 +538,7 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
 }
 
 pub fn fetch(workdir: &Path) -> Result<String, String> {
-    let stderr = run_git(workdir, &["fetch", "--all", "--prune"], "git fetch failed")?;
+    let (_, stderr) = run_git(workdir, &["fetch", "--all", "--prune"], "git fetch failed")?;
     let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
     // git prints ref updates ("abc..def  main -> origin/main") to stderr.
     match last_line {
@@ -552,7 +552,7 @@ pub fn push(workdir: &Path) -> Result<String, String> {
     // (the default `simple` pushes HEAD to its upstream of the same name).
     // `--set-upstream` makes the very first push of a new branch also record
     // its tracking ref, so later pushes need no arguments either.
-    let stderr = run_git(
+    let (_, stderr) = run_git(
         workdir,
         &["push", "--set-upstream", "origin", "HEAD"],
         "git push failed",
@@ -566,10 +566,23 @@ pub fn push(workdir: &Path) -> Result<String, String> {
     }
 }
 
+pub fn pull(workdir: &Path) -> Result<String, String> {
+    // --ff-only: a GUI must not silently create merge commits. A diverged
+    // branch surfaces git's own "Not possible to fast-forward" error instead.
+    let (stdout, _) = run_git(workdir, &["pull", "--ff-only"], "git pull failed")?;
+    // git reports the ref move ("Updating abc..def") on stdout's first line.
+    let first_line = stdout.lines().find(|l| !l.trim().is_empty());
+    match first_line {
+        Some(line) if line.trim() == "Already up to date." => Ok(line.trim().to_string()),
+        Some(line) => Ok(format!("pull complete — {}", line.trim())),
+        None => Ok("pull complete".to_string()),
+    }
+}
+
 /// Shells out to the git CLI in `workdir` so the user's credential helpers
-/// (and ssh agent) handle network auth. Returns stderr on success; on failure
-/// returns the last non-empty stderr line, or `fail_msg` if there is none.
-fn run_git(workdir: &Path, args: &[&str], fail_msg: &str) -> Result<String, String> {
+/// (and ssh agent) handle network auth. Returns (stdout, stderr) on success;
+/// on failure returns the last non-empty stderr line, or `fail_msg`.
+fn run_git(workdir: &Path, args: &[&str], fail_msg: &str) -> Result<(String, String), String> {
     let mut cmd = Command::new("git");
     cmd.args(["-C"]).arg(workdir).args(args);
     #[cfg(windows)]
@@ -590,7 +603,7 @@ fn run_git(workdir: &Path, args: &[&str], fail_msg: &str) -> Result<String, Stri
         let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
         return Err(last_line.unwrap_or(fail_msg).to_string());
     }
-    Ok(stderr)
+    Ok((String::from_utf8_lossy(&output.stdout).into_owned(), stderr))
 }
 
 #[cfg(test)]

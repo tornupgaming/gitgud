@@ -180,5 +180,22 @@ fn run_job(
             });
             None
         }
+        Job::Pull { id } => {
+            // Network, same off-thread treatment as fetch and push.
+            let (_, workdir) = repos.get(&id)?;
+            let workdir = workdir.clone();
+            let tx = upd_tx.clone();
+            let ctx = egui_ctx.clone();
+            std::thread::spawn(move || {
+                let result = ops::pull(&workdir);
+                let _ = tx.send(Update::Acted {
+                    id,
+                    kind: ActionKind::Pull,
+                    result,
+                });
+                ctx.request_repaint();
+            });
+            None
+        }
     }
 }

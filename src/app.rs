@@ -309,6 +309,7 @@ impl GitGudApp {
                             | ActionKind::Checkout
                             | ActionKind::Fetch
                             | ActionKind::Push
+                            | ActionKind::Pull
                     ) {
                         self.send(Job::LoadHistory { id, skip: 0 });
                     }
@@ -331,7 +332,8 @@ fn job_id(job: &Job) -> RepoId {
         | Job::Commit { id, .. }
         | Job::Checkout { id, .. }
         | Job::Fetch { id }
-        | Job::Push { id } => *id,
+        | Job::Push { id }
+        | Job::Pull { id } => *id,
     }
 }
 
@@ -411,6 +413,11 @@ impl eframe::App for GitGudApp {
             Some(TopBarAction::Push) => {
                 if let Some(t) = self.tabs.get(self.active) {
                     jobs.push(Job::Push { id: t.id });
+                }
+            }
+            Some(TopBarAction::Pull) => {
+                if let Some(t) = self.tabs.get(self.active) {
+                    jobs.push(Job::Pull { id: t.id });
                 }
             }
             None => {}

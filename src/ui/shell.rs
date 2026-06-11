@@ -15,6 +15,7 @@ pub enum TopBarAction {
     Open,
     Fetch,
     Push,
+    Pull,
 }
 
 pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAction> {
@@ -34,10 +35,13 @@ pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAct
         }
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // Both network actions need a loaded repo; disabled until then.
+            // All network actions need a loaded repo; disabled until then.
             let ready = tabs.get(active).is_some_and(|t| t.loaded);
             if ui.add_enabled(ready, HudButton::new("⟳ FETCH")).clicked() {
                 action = Some(TopBarAction::Fetch);
+            }
+            if ui.add_enabled(ready, HudButton::new("↓ PULL")).clicked() {
+                action = Some(TopBarAction::Pull);
             }
             if ui.add_enabled(ready, HudButton::new("↑ PUSH")).clicked() {
                 action = Some(TopBarAction::Push);
