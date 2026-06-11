@@ -353,10 +353,11 @@ impl eframe::App for GitGudApp {
             }
         }
 
-        let (f5, ctrl_enter, focused) = ui.ctx().input(|i| {
+        let (f5, ctrl_enter, ctrl_p, focused) = ui.ctx().input(|i| {
             (
                 i.key_pressed(Key::F5),
                 i.modifiers.command && i.key_pressed(Key::Enter),
+                i.modifiers.command && i.key_pressed(Key::P),
                 i.viewport().focused.unwrap_or(true),
             )
         });
@@ -381,6 +382,10 @@ impl eframe::App for GitGudApp {
                     id: t.id,
                     message: t.commit_msg.clone(),
                 });
+            }
+            // Same gate as the top-bar PUSH button.
+            if ctrl_p && t.loaded {
+                jobs.push(Job::Push { id: t.id });
             }
         }
 
