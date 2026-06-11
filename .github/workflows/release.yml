@@ -1,0 +1,50 @@
+name: Build Windows binary
+
+# Build a Windows .exe on every push to main and publish it to a rolling
+# "latest" GitHub Release, so the newest build is always one download away.
+on:
+  push:
+    branches: [main]
+  # Allow kicking off a build by hand from the Actions tab too.
+  workflow_dispatch:
+
+# The job creates/updates a Release, which needs write access to contents.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Speeds up repeat builds by caching the cargo registry + target dir.
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # Give each build a unique, sortable name while keeping a stable
+      # download URL on the "latest" release.
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/gitgud.exe "dist/gitgud.exe"
+
+      - name: Publish to the rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          # Overwrite the same release each push so there's one obvious download.
+          prerelease: true
+          files: dist/gitgud.exe
+          body: |
+            Automatically built from `main` (commit ${{ github.sha }}).
+            Download `gitgud.exe` below and run it — no install required.
