@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId,
-    Painter, Pos2, Rect, Shadow, Shape, Stroke, TextStyle, pos2, vec2,
+    Painter, Pos2, Rect, Shadow, Shape, Stroke, TextStyle,
+    epaint::{Mesh, Vertex, WHITE_UV},
+    pos2, vec2,
 };
 
 pub const BG0: Color32 = Color32::from_rgb(0x04, 0x07, 0x0d);
@@ -98,21 +100,50 @@ pub fn chamfer(rect: Rect, c: f32) -> Vec<Pos2> {
     ]
 }
 
-/// Fill and outline a chamfered plate in one call.
-pub fn plate(painter: &Painter, rect: Rect, c: f32, fill: Color32, stroke: Stroke) {
-    painter.add(Shape::convex_polygon(chamfer(rect, c), fill, stroke));
+/// Fill a convex polygon with a vertical `top` -> `bottom` gradient. egui has
+/// no gradient shape, so this triangulates the polygon as a fan and lets the
+/// GPU interpolate per-vertex colors; the color is linear in y, so any
+/// triangulation reproduces the same gradient.
+pub fn gradient_fill(painter: &Painter, points: &[Pos2], top: Color32, bottom: Color32) {
+    if points.len() < 3 {
+        return;
+    }
+    let (min_y, max_y) = points
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.y), hi.max(p.y))
+        });
+    let h = (max_y - min_y).max(1.0);
+    let mut mesh = Mesh::default();
+    for p in points {
+        mesh.vertices.push(Vertex {
+            pos: *p,
+            uv: WHITE_UV,
+            color: top.lerp_to_gamma(bottom, (p.y - min_y) / h),
+        });
+    }
+    for i in 1..points.len() as u32 - 1 {
+        mesh.indices.extend([0, i, i + 1]);
+    }
+    painter.add(Shape::mesh(mesh));
 }
 
 /// Neon edge: a crisp 1px line over two widening translucent passes. egui has
 /// no blur, so stacked low-alpha strokes fake the bloom.
 pub fn glow_outline(painter: &Painter, points: Vec<Pos2>, color: Color32) {
-    for (w, a) in [(5.0, 16), (2.5, 44)] {
+    glow_passes(painter, &points, color, 1.0);
+    painter.add(Shape::closed_line(points, Stroke::new(1.0, color)));
+}
+
+/// Just the translucent bloom passes of [`glow_outline`], scaled by `strength`
+/// (0..=1) so animated widgets can fade the glow in and out.
+pub fn glow_passes(painter: &Painter, points: &[Pos2], color: Color32, strength: f32) {
+    for (w, a) in [(5.0, 16.0), (2.5, 44.0)] {
         painter.add(Shape::closed_line(
-            points.clone(),
-            Stroke::new(w, alpha(color, a)),
+            points.to_vec(),
+            Stroke::new(w, alpha(color, (a * strength) as u8)),
         ));
     }
-    painter.add(Shape::closed_line(points, Stroke::new(1.0, color)));
 }
 
 /// L-shaped tick at each of the four corners of `rect` -- the signature HUD

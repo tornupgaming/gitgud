@@ -11,7 +11,7 @@ pub use widgets::HudButton;
 
 use eframe::egui::{Align2, FontId, Layout, Rect, Sense, Stroke, Ui, UiBuilder, pos2, vec2};
 
-use crate::theme::{self, ACCENT, BG1, BG2, DIM};
+use crate::theme::{self, ACCENT, BG0, BG1, BG2, BG3, DIM};
 
 /// Chamfer depth shared by every module plate.
 const MODULE_CHAMFER: f32 = 10.0;
@@ -35,22 +35,31 @@ pub(crate) fn module<R>(
     let c = MODULE_CHAMFER;
     let p = ui.painter();
 
-    theme::plate(p, rect, c, BG1, Stroke::NONE);
+    // Plate fill: lifted toward BG2 at the top, sinking toward the void color
+    // at the bottom, so the module reads as lit from above instead of flat.
+    theme::gradient_fill(
+        p,
+        &theme::chamfer(rect, c),
+        BG1.lerp_to_gamma(BG2, 0.4),
+        BG1.lerp_to_gamma(BG0, 0.55),
+    );
 
     // Title band, with its top-right corner following the plate's chamfer.
+    // Its own top-lit sheen makes it read as a raised strip on the plate.
     let (l, t, r) = (rect.left(), rect.top(), rect.right());
     let band_bottom = t + BAND_H;
-    p.add(eframe::egui::Shape::convex_polygon(
-        vec![
+    theme::gradient_fill(
+        p,
+        &[
             pos2(l, t),
             pos2(r - c, t),
             pos2(r, t + c),
             pos2(r, band_bottom),
             pos2(l, band_bottom),
         ],
+        BG2.lerp_to_gamma(BG3, 0.5),
         BG2,
-        Stroke::NONE,
-    ));
+    );
     let title_rect = theme::tracked_text(
         p,
         pos2(l + 12.0, t + BAND_H / 2.0),

@@ -11,7 +11,8 @@
 //! `ui.add(HudButton::new("FETCH"))` or `ui.add_enabled(ready, HudButton::…)`.
 
 use eframe::egui::{
-    Align2, Color32, Rect, Response, Sense, Shape, Stroke, TextStyle, Ui, Vec2, Widget, pos2, vec2,
+    Align2, Color32, Rect, Response, Sense, Shape, Stroke, TextStyle, Ui, Vec2, Widget,
+    emath::easing, lerp, pos2, vec2,
 };
 
 use super::text_width;
@@ -111,18 +112,24 @@ impl Widget for HudButton {
         let hot = enabled && resp.hovered();
         let lit = self.accent && enabled;
 
+        // Hover factor, eased 0..=1. Everything below (fill, border, glow,
+        // brackets, sweep) is driven off this one value, so the whole state
+        // change reads as a single 150ms motion instead of a binary flip.
+        // egui keeps requesting repaints while the value is mid-flight.
+        let t = ui
+            .ctx()
+            .animate_bool_with_time_and_easing(resp.id, hot, 0.15, easing::cubic_out);
+
         // Cut the top-right and bottom-left corners so the tile reads as an
         // angular HUD plate -- the same silhouette panels and modals use.
         let c = chamfer;
-        let (l, t, b) = (rect.left(), rect.top(), rect.bottom());
+        let (l, top, b) = (rect.left(), rect.top(), rect.bottom());
         let outline = theme::chamfer(rect, c);
 
-        let fill = if !enabled {
-            BG1
-        } else if hot {
-            BG3
+        let fill = if enabled {
+            BG2.lerp_to_gamma(BG3, t)
         } else {
-            BG2
+            BG1
         };
 
         let painter = ui.painter();
@@ -131,34 +138,75 @@ impl Widget for HudButton {
             // Accent wash over the base fill so the plate reads as energised.
             painter.add(Shape::convex_polygon(
                 outline.clone(),
-                theme::alpha(ACCENT, if hot { 50 } else { 28 }),
+                theme::alpha(ACCENT, 28 + (22.0 * t) as u8),
+                Stroke::NONE,
+            ));
+        }
+        if resp.is_pointer_button_down_on() && enabled {
+            // Press flash: an extra accent wash for as long as the button is held.
+            painter.add(Shape::convex_polygon(
+                outline.clone(),
+                theme::alpha(ACCENT, 38),
                 Stroke::NONE,
             ));
         }
 
-        if lit || hot {
-            theme::glow_outline(painter, outline, ACCENT);
+        // Bloom fades in with the hover factor; accent buttons glow constantly.
+        let glow = if lit { 1.0 } else { t };
+        if glow > 0.0 {
+            theme::glow_passes(painter, &outline, ACCENT, glow);
+        }
+        let border_color = if !enabled {
+            theme::alpha(BORDER, 120)
+        } else if lit {
+            ACCENT
         } else {
-            painter.add(Shape::closed_line(
-                outline,
-                Stroke::new(
-                    1.0,
-                    if enabled {
-                        BORDER
-                    } else {
-                        theme::alpha(BORDER, 120)
-                    },
-                ),
-            ));
+            BORDER.lerp_to_gamma(ACCENT, t)
+        };
+        painter.add(Shape::closed_line(outline, Stroke::new(1.0, border_color)));
+
+        // Target-lock brackets: four L-shaped corner ticks that start outside
+        // the plate and converge onto it as the hover factor rises, arms
+        // growing as they close in.
+        if t > 0.0 {
+            let reach = 2.0 + 4.0 * (1.0 - t);
+            let arm = (if self.small { 5.0 } else { 7.0 }) * t;
+            theme::corner_brackets(
+                painter,
+                rect.expand(reach),
+                arm,
+                Stroke::new(1.5, theme::alpha(ACCENT, (230.0 * t) as u8)),
+            );
+        }
+
+        // Light sweep: a slanted band that crosses the plate during the
+        // transition. The sin envelope is zero at both ends of the animation,
+        // so the steady states stay clean and un-hovering plays it in reverse.
+        if enabled && t > 0.0 && t < 1.0 {
+            let flash = (t * std::f32::consts::PI).sin();
+            let h = rect.height();
+            // Same 45° slant as the hatch; travels left edge to right edge.
+            let x = lerp((l - h)..=rect.right(), t);
+            let p = painter.with_clip_rect(rect);
+            for (w, a) in [(10.0, 28.0), (3.0, 90.0)] {
+                p.line_segment(
+                    [pos2(x, b), pos2(x + h, top)],
+                    Stroke::new(w, theme::alpha(BRIGHT, (a * flash) as u8)),
+                );
+            }
         }
 
         // Faint diagonal hatch on the left, echoing the reference art. Clipped
         // to a band so the 45° strokes never poke past the chamfered corners.
         if !self.small {
             let band_w = (rect.width() * 0.4).min(64.0);
-            let band = Rect::from_min_max(pos2(l + c, t + 2.0), pos2(l + c + band_w, b - 2.0));
+            let band = Rect::from_min_max(pos2(l + c, top + 2.0), pos2(l + c + band_w, b - 2.0));
             let hp = ui.painter().with_clip_rect(band);
-            let hatch_color = if lit || hot { ACCENT } else { BORDER };
+            let hatch_color = if lit {
+                ACCENT
+            } else {
+                BORDER.lerp_to_gamma(ACCENT, t)
+            };
             let hatch = Stroke::new(1.0, theme::alpha(hatch_color, 26));
             let h = band.height();
             let mut x = band.left() - h;
@@ -170,10 +218,10 @@ impl Widget for HudButton {
 
         let text_color = self.text_color.unwrap_or(if !enabled {
             DIM
-        } else if lit || hot {
+        } else if lit {
             BRIGHT
         } else {
-            TEXT
+            TEXT.lerp_to_gamma(BRIGHT, t)
         });
         theme::tracked_text(
             ui.painter(),
