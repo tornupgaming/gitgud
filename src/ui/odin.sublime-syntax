@@ -1,0 +1,55 @@
+%YAML 1.2
+---
+# Minimal Odin grammar. The Sublime default packages bundled with syntect have
+# no Odin syntax, so we ship a token-level one (keywords, literals, comments,
+# calls). Good enough for diff colouring, not a full parser.
+name: Odin
+file_extensions:
+  - odin
+scope: source.odin
+
+contexts:
+  main:
+    - match: '//.*'
+      scope: comment.line.double-slash.odin
+    - match: '/\*'
+      push: block_comment
+    - match: '"'
+      push: string_double
+    - match: '`'
+      push: string_raw
+    - match: "'(\\\\.|[^'\\\\])*'"
+      scope: constant.character.odin
+    - match: '\b(package|import|foreign|using|when|where|if|else|for|switch|case|defer|return|break|continue|fallthrough|in|not_in|or_else|or_return|or_break|or_continue|do|cast|transmute|auto_cast|distinct|dynamic)\b'
+      scope: keyword.control.odin
+    - match: '\b(proc|struct|enum|union|map|bit_set|bit_field|matrix)\b'
+      scope: storage.type.odin
+    - match: '\b(true|false|nil|context)\b'
+      scope: constant.language.odin
+    - match: '\b(i8|i16|i32|i64|i128|int|u8|u16|u32|u64|u128|uint|uintptr|f16|f32|f64|b8|b16|b32|b64|bool|byte|rune|string|cstring|rawptr|any|typeid|complex32|complex64|complex128|quaternion64|quaternion128|quaternion256)\b'
+      scope: support.type.odin
+    - match: '\b(0[bB][01_]+|0[oO][0-7_]+|0[xXh][0-9a-fA-F_]+|\d[\d_]*(\.\d[\d_]*)?([eE][+-]?\d+)?[ijk]?)\b'
+      scope: constant.numeric.odin
+    - match: '#[A-Za-z_][A-Za-z0-9_]*'
+      scope: keyword.other.directive.odin
+    - match: '@\(?[A-Za-z_][A-Za-z0-9_]*\)?'
+      scope: keyword.other.attribute.odin
+    - match: '\b[A-Za-z_][A-Za-z0-9_]*\b(?=\()'
+      scope: variable.function.odin
+  block_comment:
+    - meta_scope: comment.block.odin
+    # Odin block comments nest.
+    - match: '/\*'
+      push: block_comment
+    - match: '\*/'
+      pop: true
+  string_double:
+    - meta_scope: string.quoted.double.odin
+    - match: '\\.'
+      scope: constant.character.escape.odin
+    - match: '"'
+      pop: true
+  string_raw:
+    - meta_scope: string.quoted.raw.odin
+    - match: '`'
+      pop: true

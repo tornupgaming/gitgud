@@ -1,12 +1,15 @@
 //! Central diff viewer (the DIFF ANALYSIS module). The diff arrives as nested
-//! `DiffData`; we flatten it once into `DiffView` rows so the per-frame render
-//! is a plain index walk that `show_rows` can virtualize.
+//! `DiffData`; we flatten it once into `DiffView` rows -- computing syntax
+//! highlight spans in the same pass -- so the per-frame render is a plain
+//! index walk that `show_rows` can virtualize.
 
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     Align2, CornerRadius, Rect, ScrollArea, Sense, Spinner, Stroke, StrokeKind, TextStyle, Ui,
     pos2, vec2,
 };
 
+use super::highlight::{LineHighlighter, Spans};
 use super::{char_w, module, text_width, truncate_right};
 use crate::app::RepoTab;
 use crate::git::{DiffData, DiffKey, DiffLine, LineKind};
@@ -33,7 +36,8 @@ pub enum DiffRow {
         dels: usize,
     },
     Binary,
-    Line(DiffLine),
+    /// Spans are `None` for hunk headers and unrecognised languages.
+    Line(DiffLine, Option<Spans>),
 }
 
 impl DiffView {
@@ -41,6 +45,7 @@ impl DiffView {
         let mut rows = Vec::new();
         for f in data.files {
             let binary = f.binary;
+            let mut hl = LineHighlighter::for_path(&f.path);
             rows.push(DiffRow::File {
                 path: f.path,
                 adds: f.adds,
@@ -49,7 +54,12 @@ impl DiffView {
             if binary {
                 rows.push(DiffRow::Binary);
             } else {
-                rows.extend(f.lines.into_iter().map(DiffRow::Line));
+                rows.extend(f.lines.into_iter().map(|l| {
+                    let spans = (l.kind != LineKind::Hunk)
+                        .then(|| hl.spans(&l.text))
+                        .flatten();
+                    DiffRow::Line(l, spans)
+                }));
             }
         }
         Self {
@@ -253,10 +263,13 @@ fn body(ui: &mut Ui, view: &DiffView) {
                             DIM,
                         );
                     }
-                    DiffRow::Line(l) => {
+                    DiffRow::Line(l, spans) => {
+                        // Add/del reads off the background tint alone now that
+                        // the text carries syntax colours, so it runs a touch
+                        // stronger than the old 14.
                         let (color, bg) = match l.kind {
-                            LineKind::Add => (GREEN, Some(theme::alpha(GREEN, 14))),
-                            LineKind::Del => (RED, Some(theme::alpha(RED, 14))),
+                            LineKind::Add => (TEXT, Some(theme::alpha(GREEN, 26))),
+                            LineKind::Del => (TEXT, Some(theme::alpha(RED, 26))),
                             LineKind::Hunk => {
                                 (theme::alpha(ACCENT, 170), Some(theme::alpha(ACCENT, 10)))
                             }
@@ -291,13 +304,34 @@ fn body(ui: &mut Ui, view: &DiffView) {
                                 Stroke::new(1.0, theme::alpha(BORDER, 160)),
                             );
                         }
-                        p.text(
-                            pos2(rect.left() + gutter_w, y),
-                            Align2::LEFT_CENTER,
-                            &l.text,
-                            font.clone(),
-                            color,
-                        );
+                        match spans {
+                            Some(spans) if !spans.is_empty() => {
+                                let mut job = LayoutJob::default();
+                                for (color, range) in spans {
+                                    job.append(
+                                        &l.text[range.clone()],
+                                        0.0,
+                                        TextFormat {
+                                            font_id: font.clone(),
+                                            color: *color,
+                                            ..Default::default()
+                                        },
+                                    );
+                                }
+                                let galley = ui.fonts_mut(|f| f.layout_job(job));
+                                let top = y - galley.size().y * 0.5;
+                                p.galley(pos2(rect.left() + gutter_w, top), galley, TEXT);
+                            }
+                            _ => {
+                                p.text(
+                                    pos2(rect.left() + gutter_w, y),
+                                    Align2::LEFT_CENTER,
+                                    &l.text,
+                                    font.clone(),
+                                    color,
+                                );
+                            }
+                        }
                     }
                 }
             }

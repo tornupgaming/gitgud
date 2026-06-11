@@ -1,6 +1,7 @@
 //! Shared UI chrome: the floating HUD module frame and text helpers.
 
 pub mod diff;
+mod highlight;
 pub mod history;
 pub mod shell;
 pub mod sidebar;

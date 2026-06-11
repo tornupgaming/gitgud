@@ -11,6 +11,9 @@ eframe = { version = "0.34.3", default-features = false, features = ["glow", "de
 git2 = { version = "0.21", default-features = false }
 # Native folder-picker dialog.
 rfd = "0.17"
+# Diff syntax highlighting. Trimmed to parsing + the bundled Sublime syntax
+# dump; yaml-load lets us add the Odin grammar the defaults lack.
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-onig", "yaml-load"] }
 
 # Size-optimized release build, so binary size measurements are honest.
 [profile.release]
