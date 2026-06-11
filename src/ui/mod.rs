@@ -8,11 +8,12 @@ pub mod widgets;
 pub use widgets::HudButton;
 
 use eframe::egui::{
-    Align, Button, FontId, Frame, Layout, Margin, RichText, Spinner, Stroke, Ui, pos2, vec2,
+    Align, Align2, Button, CornerRadius, FontId, Frame, Layout, Margin, Rect, RichText, Sense,
+    Spinner, Stroke, TextStyle, Ui, pos2, vec2,
 };
 
 use crate::app::RepoTab;
-use crate::theme::{ACCENT, AMBER, BG1, BG2, BORDER, DIM, RED, TEXT};
+use crate::theme::{self, ACCENT, AMBER, BG1, BG2, BORDER, DIM, RED, TEXT};
 
 pub enum TopBarAction {
     Select(usize),
@@ -67,11 +68,26 @@ pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAct
             }
         });
     });
+
+    // Accent hairline + corner ticks along the bar's lower edge, tying it to
+    // the rest of the HUD chrome.
+    let bar = ui.clip_rect();
+    let y = bar.bottom() - 0.5;
+    let p = ui.painter();
+    p.line_segment([pos2(bar.left(), y), pos2(bar.right(), y)], Stroke::new(1.0, theme::alpha(ACCENT, 90)));
+    p.line_segment([pos2(bar.left(), y), pos2(bar.left() + 10.0, y)], Stroke::new(1.5, ACCENT));
+    p.line_segment([pos2(bar.right() - 10.0, y), pos2(bar.right(), y)], Stroke::new(1.5, ACCENT));
     action
 }
 
 pub fn status_bar(ui: &mut Ui, tab: Option<&RepoTab>, app_log: Option<&(bool, String)>) {
     let bar = ui.max_rect();
+    // Accent hairline along the bar's top edge (the busy scanline rides above).
+    let top = ui.clip_rect().top() + 0.5;
+    ui.painter().line_segment(
+        [pos2(ui.clip_rect().left(), top), pos2(ui.clip_rect().right(), top)],
+        Stroke::new(1.0, theme::alpha(ACCENT, 70)),
+    );
     ui.horizontal_centered(|ui| {
         if let Some(tab) = tab {
             let glyph = if tab.head_detached { "⌖" } else { "⎇" };
@@ -103,7 +119,12 @@ pub fn status_bar(ui: &mut Ui, tab: Option<&RepoTab>, app_log: Option<&(bool, St
 /// Returns true when the "OPEN REPOSITORY" button was clicked.
 pub fn empty_state(ui: &mut Ui) -> bool {
     let mut open = false;
-    ui.add_space(ui.available_height() * 0.32);
+    // Gridded backdrop + an outer HUD frame to fill the void behind the logo.
+    let area = ui.max_rect();
+    theme::backdrop(ui.painter(), area);
+    theme::corner_brackets(ui.painter(), area.shrink(18.0), 22.0, Stroke::new(1.5, ACCENT));
+
+    ui.add_space(ui.available_height() * 0.30);
     ui.vertical_centered(|ui| {
         ui.label(RichText::new("▰▰ GITGUD").font(FontId::monospace(28.0)).color(ACCENT));
         ui.label(RichText::new("tactical git operations console").color(DIM));
@@ -117,8 +138,22 @@ pub fn empty_state(ui: &mut Ui) -> bool {
     open
 }
 
+/// Stylised panel header: a cyan tick, the label, and an accent rule that
+/// fades into the panel. Every side panel routes its headers through here.
 pub(crate) fn section_header(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).small().color(DIM));
+    let h = ui.text_style_height(&TextStyle::Small) + 7.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let font = TextStyle::Small.resolve(ui.style());
+    let y = rect.center().y;
+    let p = ui.painter();
+    // Leading accent tick.
+    p.rect_filled(
+        Rect::from_min_size(pos2(rect.left(), rect.top() + 3.0), vec2(3.0, rect.height() - 6.0)),
+        CornerRadius::ZERO,
+        ACCENT,
+    );
+    let tr = p.text(pos2(rect.left() + 10.0, y), Align2::LEFT_CENTER, text, font, DIM);
+    theme::fade_rule(p, pos2(tr.right() + 8.0, y), rect.right() - tr.right() - 8.0, ACCENT);
 }
 
 /// Monospace glyph width -- the diff viewer's gutter math assumes one width

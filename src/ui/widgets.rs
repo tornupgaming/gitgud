@@ -79,18 +79,10 @@ impl Widget for HudButton {
         let enabled = ui.is_enabled();
         let hot = enabled && resp.hovered();
 
-        // Chamfered hexagon: cut the top-right and bottom-left corners so the
-        // tile reads as an angular HUD plate rather than a plain rectangle.
+        // Cut the top-right and bottom-left corners so the tile reads as an
+        // angular HUD plate -- the same silhouette panels and modals use.
         let c = chamfer;
-        let (l, t, r, b) = (rect.left(), rect.top(), rect.right(), rect.bottom());
-        let outline = vec![
-            pos2(l, t),
-            pos2(r - c, t),
-            pos2(r, t + c),
-            pos2(r, b),
-            pos2(l + c, b),
-            pos2(l, b - c),
-        ];
+        let (l, t, b) = (rect.left(), rect.top(), rect.bottom());
 
         let fill = if !enabled {
             BG1
@@ -107,16 +99,12 @@ impl Widget for HudButton {
         // border. egui has no blur, so a fat low-alpha stroke fakes it.
         if hot {
             painter.add(Shape::closed_line(
-                outline.clone(),
+                theme::chamfer(rect, c),
                 Stroke::new(4.0, theme::alpha(ACCENT, 40)),
             ));
         }
 
-        painter.add(Shape::convex_polygon(
-            outline.clone(),
-            fill,
-            Stroke::new(1.0, border),
-        ));
+        theme::plate(painter, rect, c, fill, Stroke::new(1.0, border));
 
         // Faint diagonal hatch on the left, echoing the reference art. Clipped
         // to a band so the 45° strokes never poke past the chamfered corners.

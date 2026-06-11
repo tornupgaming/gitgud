@@ -8,7 +8,7 @@ use eframe::egui::{
 use super::{HudButton, section_header, truncate_left};
 use crate::app::RepoTab;
 use crate::git::{ChangeKind, DiffKey, Job};
-use crate::theme::{self, ACCENT, AMBER, BG1, BG3, DIM, GREEN, PURPLE, RED, TEXT};
+use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, DIM, GREEN, PURPLE, RED, TEXT};
 
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     // Inner panels: commit box pinned to the bottom, the rest fills above it.
@@ -42,27 +42,48 @@ fn confirm_checkout(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     let Some(branch) = tab.pending_checkout.clone() else { return };
     let dirty = !tab.staged.is_empty() || !tab.unstaged.is_empty();
 
-    let modal = Modal::new(Id::new("confirm_checkout")).show(ui.ctx(), |ui| {
-        ui.set_width(260.0);
-        ui.label(RichText::new("Switch branch?").strong());
-        ui.add_space(6.0);
-        ui.label(format!("Check out \"{branch}\"?"));
-        if dirty {
+    // Angular HUD dialog: accent frame, dimmed gridless backdrop, a header
+    // rule and corner brackets traced round the content.
+    let frame = Frame::new()
+        .fill(BG1)
+        .stroke(Stroke::new(1.0, ACCENT))
+        .inner_margin(Margin::same(12));
+    let modal = Modal::new(Id::new("confirm_checkout"))
+        .frame(frame)
+        .backdrop_color(theme::alpha(BG0, 210))
+        .show(ui.ctx(), |ui| {
+            ui.set_width(264.0);
+            ui.label(RichText::new("◤ CONFIRM CHECKOUT").small().color(ACCENT));
+            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+            theme::fade_rule(ui.painter(), pos2(rule.left(), rule.center().y), rule.width(), ACCENT);
             ui.add_space(4.0);
-            ui.label(
-                RichText::new("⚠ You have uncommitted changes that will move with you.")
-                    .small()
-                    .color(AMBER),
+            ui.label(RichText::new("Switch branch?").strong());
+            ui.add_space(6.0);
+            ui.label(format!("Check out \"{branch}\"?"));
+            if dirty {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("⚠ You have uncommitted changes that will move with you.")
+                        .small()
+                        .color(AMBER),
+                );
+            }
+            ui.add_space(12.0);
+            let buttons = ui
+                .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let switch = ui.add(HudButton::new("Switch").text_color(ACCENT)).clicked();
+                    let cancel = ui.add(HudButton::new("Cancel")).clicked();
+                    (switch, cancel)
+                })
+                .inner;
+            theme::corner_brackets(
+                ui.painter(),
+                ui.min_rect().expand(8.0),
+                12.0,
+                Stroke::new(1.5, ACCENT),
             );
-        }
-        ui.add_space(12.0);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let switch = ui.add(HudButton::new("Switch").text_color(ACCENT)).clicked();
-            let cancel = ui.add(HudButton::new("Cancel")).clicked();
-            (switch, cancel)
-        })
-        .inner
-    });
+            buttons
+        });
 
     let (switch, cancel) = modal.inner;
     if switch {
@@ -214,6 +235,7 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
 }
 
 fn commit_box(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    section_header(ui, "◤ COMMIT");
     ui.add(
         TextEdit::multiline(&mut tab.commit_msg)
             .desired_rows(3)

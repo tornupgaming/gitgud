@@ -3,8 +3,8 @@
 //! that `show_rows` can virtualize.
 
 use eframe::egui::{
-    Align, Align2, CornerRadius, Label, Layout, Rect, RichText, ScrollArea, Sense, Spinner,
-    TextStyle, Ui, pos2, vec2,
+    Align, Align2, CornerRadius, Frame, Label, Layout, Margin, Rect, RichText, ScrollArea, Sense,
+    Spinner, Stroke, TextStyle, Ui, pos2, vec2,
 };
 
 use super::char_w;
@@ -46,18 +46,39 @@ impl DiffView {
 
 pub fn show(ui: &mut Ui, tab: &RepoTab) {
     let Some(key) = &tab.selection else {
+        theme::backdrop(ui.painter(), ui.max_rect());
         ui.add_space(ui.available_height() * 0.45);
-        ui.vertical_centered(|ui| ui.label(RichText::new("select a file or commit").color(DIM)));
+        ui.vertical_centered(|ui| ui.label(RichText::new("◧ select a file or commit").color(DIM)));
         return;
     };
     let Some(view) = &tab.diff else {
         // Selection made but the worker hasn't answered yet.
+        theme::backdrop(ui.painter(), ui.max_rect());
         ui.add_space(ui.available_height() * 0.45);
         ui.vertical_centered(|ui| ui.add(Spinner::new().size(24.0).color(ACCENT)));
         return;
     };
-    header(ui, tab, key, view);
-    ui.separator();
+
+    // Header sits on its own band: a darker plate with a left accent tick and
+    // an accent rule fading off below it.
+    let band = Frame::new()
+        .fill(BG2)
+        .inner_margin(Margin::symmetric(8, 5))
+        .show(ui, |ui| header(ui, tab, key, view))
+        .response
+        .rect;
+    let p = ui.painter();
+    p.rect_filled(
+        Rect::from_min_size(band.min, vec2(3.0, band.height())),
+        CornerRadius::ZERO,
+        ACCENT,
+    );
+    p.line_segment(
+        [pos2(band.left(), band.bottom()), pos2(band.right(), band.bottom())],
+        Stroke::new(1.0, theme::alpha(ACCENT, 60)),
+    );
+    theme::fade_rule(p, pos2(band.left(), band.bottom() + 2.0), band.width() * 0.6, ACCENT);
+    ui.add_space(3.0);
     body(ui, view);
 }
 

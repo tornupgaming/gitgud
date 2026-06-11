@@ -4,13 +4,13 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
-use eframe::egui::{self, CentralPanel, Frame, Key, Margin, Panel};
+use eframe::egui::{self, CentralPanel, Frame, Key, Margin, Panel, Stroke};
 
 use crate::git::worker::GitWorker;
 use crate::git::{
     ActionKind, BranchInfo, CommitInfo, DiffKey, FileChange, Job, RepoId, Update,
 };
-use crate::theme::{self, BG1};
+use crate::theme::{self, ACCENT, BG1};
 use crate::ui::{self, TopBarAction, diff::DiffView};
 
 pub struct RepoTab {
@@ -410,6 +410,10 @@ impl eframe::App for GitGudApp {
                 .show_inside(ui, |ui| ui::history::show(ui, tab, &mut jobs));
             CentralPanel::default().show_inside(ui, |ui| ui::diff::show(ui, tab));
         }
+
+        // Outer HUD bezel: corner brackets framing the whole console, drawn
+        // last so they sit above every panel.
+        theme::corner_brackets(ui.painter(), ui.max_rect().shrink(2.0), 16.0, Stroke::new(1.5, ACCENT));
 
         for job in jobs {
             self.send(job);
