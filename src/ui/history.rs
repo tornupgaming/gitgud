@@ -1,11 +1,11 @@
 //! Virtualized commit history list ("history" side panel).
 
 use eframe::egui::{
-    Align2, Button, CornerRadius, Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind,
+    Align2, CornerRadius, Rect, ScrollArea, Sense, Stroke, StrokeKind,
     TextStyle, Ui, pos2, vec2,
 };
 
-use super::{section_header, text_width, truncate_right};
+use super::{HudButton, section_header, text_width, truncate_right};
 use crate::app::RepoTab;
 use crate::git::{DiffKey, Job};
 use crate::theme::{self, ACCENT, AMBER, BG3, BORDER, DIM, PURPLE, TEXT};
@@ -31,7 +31,8 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         .show_rows(ui, row_h, total, |ui, range| {
             for i in range {
                 if i == tab.commits.len() {
-                    let btn = Button::new(RichText::new("▼ LOAD MORE").color(DIM))
+                    let btn = HudButton::new("▼ LOAD MORE")
+                        .text_color(DIM)
                         .min_size(vec2(ui.available_width(), row_h));
                     if ui.add(btn).clicked() {
                         load_more = true;

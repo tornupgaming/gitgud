@@ -3,9 +3,12 @@
 pub mod diff;
 pub mod history;
 pub mod sidebar;
+pub mod widgets;
+
+pub use widgets::HudButton;
 
 use eframe::egui::{
-    Align, Button, FontId, Frame, Layout, Margin, RichText, Spinner, Stroke, Ui, pos2,
+    Align, Button, FontId, Frame, Layout, Margin, RichText, Spinner, Stroke, Ui, pos2, vec2,
 };
 
 use crate::app::RepoTab;
@@ -45,17 +48,17 @@ pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAct
                 });
         }
 
-        if ui.button("+ OPEN").clicked() {
+        if ui.add(HudButton::new("+ OPEN")).clicked() {
             action = Some(TopBarAction::Open);
         }
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Both network actions need a loaded repo; disabled until then.
             let ready = tabs.get(active).is_some_and(|t| t.loaded);
-            if ui.add_enabled(ready, Button::new("⟳ FETCH")).clicked() {
+            if ui.add_enabled(ready, HudButton::new("⟳ FETCH")).clicked() {
                 action = Some(TopBarAction::Fetch);
             }
-            if ui.add_enabled(ready, Button::new("⤒ PUSH")).clicked() {
+            if ui.add_enabled(ready, HudButton::new("⤒ PUSH")).clicked() {
                 action = Some(TopBarAction::Push);
             }
             if tabs.iter().any(|t| t.in_flight > 0) {
@@ -105,7 +108,9 @@ pub fn empty_state(ui: &mut Ui) -> bool {
         ui.label(RichText::new("▰▰ GITGUD").font(FontId::monospace(28.0)).color(ACCENT));
         ui.label(RichText::new("tactical git operations console").color(DIM));
         ui.add_space(16.0);
-        open = ui.button("OPEN REPOSITORY").clicked();
+        open = ui
+            .add(HudButton::new("OPEN REPOSITORY").min_size(vec2(190.0, 30.0)))
+            .clicked();
         ui.add_space(8.0);
         ui.label(RichText::new("or drop a folder anywhere").small().color(DIM));
     });

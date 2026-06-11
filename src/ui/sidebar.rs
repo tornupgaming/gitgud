@@ -1,11 +1,11 @@
 //! Left "ops" panel: branches, working-tree changes, and the commit box.
 
 use eframe::egui::{
-    Align, Align2, Button, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Modal, Panel,
+    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Modal, Panel,
     Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
-use super::{section_header, truncate_left};
+use super::{HudButton, section_header, truncate_left};
 use crate::app::RepoTab;
 use crate::git::{ChangeKind, DiffKey, Job};
 use crate::theme::{self, ACCENT, AMBER, BG1, BG3, DIM, GREEN, PURPLE, RED, TEXT};
@@ -57,8 +57,8 @@ fn confirm_checkout(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         }
         ui.add_space(12.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let switch = ui.button(RichText::new("Switch").color(ACCENT)).clicked();
-            let cancel = ui.button("Cancel").clicked();
+            let switch = ui.add(HudButton::new("Switch").text_color(ACCENT)).clicked();
+            let cancel = ui.add(HudButton::new("Cancel")).clicked();
             (switch, cancel)
         })
         .inner
@@ -138,7 +138,7 @@ fn list_header(ui: &mut Ui, label: &str, action: &str, enabled: bool) -> bool {
     ui.horizontal(|ui| {
         ui.label(RichText::new(label).small().color(DIM));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let btn = Button::new(RichText::new(action).small());
+            let btn = HudButton::new(action).small(true);
             clicked = ui.add_enabled(enabled, btn).clicked();
         });
     });
@@ -223,8 +223,9 @@ fn commit_box(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     ui.add_space(4.0);
     let enabled = tab.can_commit();
     let color = if enabled { ACCENT } else { DIM };
-    let button = Button::new(RichText::new("▶ COMMIT").color(color))
-        .min_size(vec2(ui.available_width(), 24.0));
+    let button = HudButton::new("▶ COMMIT")
+        .text_color(color)
+        .min_size(vec2(ui.available_width(), 26.0));
     if ui.add_enabled(enabled, button).clicked() {
         jobs.push(Job::Commit { id: tab.id, message: tab.commit_msg.clone() });
     }
