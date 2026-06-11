@@ -27,6 +27,9 @@ pub struct RepoTab {
     pub selection: Option<DiffKey>,
     pub diff: Option<DiffView>,
     pub commit_msg: String,
+    /// Branch the user clicked but hasn't confirmed switching to yet. While
+    /// set, the confirm dialog is shown; the checkout only fires on confirm.
+    pub pending_checkout: Option<String>,
     /// Jobs sent but not yet answered; > 0 shows the busy indicators.
     pub in_flight: usize,
     /// Last action outcome for the status bar: (is_error, message).
@@ -52,6 +55,7 @@ impl RepoTab {
             selection: None,
             diff: None,
             commit_msg: String::new(),
+            pending_checkout: None,
             in_flight: 0,
             log: None,
             loaded: false,

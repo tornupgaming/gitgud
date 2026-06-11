@@ -1,8 +1,8 @@
 //! Left "ops" panel: branches, working-tree changes, and the commit box.
 
 use eframe::egui::{
-    Align, Align2, Button, CentralPanel, CornerRadius, Frame, Layout, Margin, Panel, Rect,
-    RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
+    Align, Align2, Button, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Modal, Panel,
+    Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
 use super::{char_w, section_header, truncate_left};
@@ -20,20 +20,66 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         .show_inside(ui, |ui| {
             section_header(ui, "◤ BRANCHES");
             let max_h = ui.available_height() * 0.38;
-            ScrollArea::vertical()
+            let clicked = ScrollArea::vertical()
                 .id_salt("branches")
                 .max_height(max_h)
                 .auto_shrink([false, true])
-                .show(ui, |ui| branches(ui, tab, jobs));
+                .show(ui, |ui| branches(ui, tab))
+                .inner;
+            // A click only *arms* a switch; the checkout waits for confirmation.
+            if let Some(name) = clicked {
+                tab.pending_checkout = Some(name);
+            }
             ui.add_space(10.0);
             changes(ui, tab, jobs);
         });
+    confirm_checkout(ui, tab, jobs);
 }
 
-fn branches(ui: &mut Ui, tab: &RepoTab, jobs: &mut Vec<Job>) {
+/// Modal shown while a branch switch is pending. Returns the checkout job only
+/// once the user confirms; clicking away, Escape, or Cancel aborts it.
+fn confirm_checkout(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let Some(branch) = tab.pending_checkout.clone() else { return };
+    let dirty = !tab.staged.is_empty() || !tab.unstaged.is_empty();
+
+    let modal = Modal::new(Id::new("confirm_checkout")).show(ui.ctx(), |ui| {
+        ui.set_width(260.0);
+        ui.label(RichText::new("Switch branch?").strong());
+        ui.add_space(6.0);
+        ui.label(format!("Check out \"{branch}\"?"));
+        if dirty {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("⚠ You have uncommitted changes that will move with you.")
+                    .small()
+                    .color(AMBER),
+            );
+        }
+        ui.add_space(12.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let switch = ui.button(RichText::new("Switch").color(ACCENT)).clicked();
+            let cancel = ui.button("Cancel").clicked();
+            (switch, cancel)
+        })
+        .inner
+    });
+
+    let (switch, cancel) = modal.inner;
+    if switch {
+        jobs.push(Job::Checkout { id: tab.id, branch });
+        tab.pending_checkout = None;
+    } else if cancel || modal.should_close() {
+        tab.pending_checkout = None;
+    }
+}
+
+/// Draws the branch list and returns the name of a local branch the user
+/// clicked, if any. The caller decides what to do with it (here: confirm).
+fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<String> {
     let font = TextStyle::Body.resolve(ui.style());
     let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
 
+    let mut clicked = None;
     for b in &tab.branches {
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
         if !ui.is_rect_visible(rect) {
@@ -61,9 +107,10 @@ fn branches(ui: &mut Ui, tab: &RepoTab, jobs: &mut Vec<Job>) {
             }
         }
         if resp.clicked() && !b.is_head {
-            jobs.push(Job::Checkout { id: tab.id, branch: b.name.clone() });
+            clicked = Some(b.name.clone());
         }
     }
+    clicked
 }
 
 fn changes(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
