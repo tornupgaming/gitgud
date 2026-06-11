@@ -1,20 +1,19 @@
-//! Virtualized commit history list ("history" side panel).
+//! Virtualized commit history list (the COMMIT LOG module).
 
 use eframe::egui::{
-    Align2, CornerRadius, Rect, ScrollArea, Sense, Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
+    Align2, CornerRadius, Rect, ScrollArea, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, pos2,
+    vec2,
 };
 
-use super::{HudButton, section_header, text_width, truncate_right};
+use super::{HudButton, module, text_width, truncate_right};
 use crate::app::RepoTab;
 use crate::git::{DiffKey, Job};
-use crate::theme::{self, ACCENT, AMBER, BG3, BORDER, DIM, PURPLE, TEXT};
+use crate::theme::{self, ACCENT, BG3, BORDER, DIM, LANES, TEXT};
 
 /// Width of the commit-graph node column.
 const NODE_COL: f32 = 18.0;
 
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    section_header(ui, &format!("◤ HISTORY — {}", tab.head));
-
     let body_h = ui.text_style_height(&TextStyle::Body);
     let small_h = ui.text_style_height(&TextStyle::Small);
     let row_h = body_h + small_h + 8.0;
@@ -24,23 +23,30 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     let mut select: Option<String> = None;
     let mut load_more = false;
 
-    ScrollArea::vertical()
-        .id_salt("history")
-        .auto_shrink([false, false])
-        .show_rows(ui, row_h, total, |ui, range| {
-            for i in range {
-                if i == tab.commits.len() {
-                    let btn = HudButton::new("▼ LOAD MORE")
-                        .text_color(DIM)
-                        .min_size(vec2(ui.available_width(), row_h));
-                    if ui.add(btn).clicked() {
-                        load_more = true;
+    let readout = format!(
+        "{}{} ENTRIES",
+        tab.commits.len(),
+        if tab.history_done { "" } else { "+" }
+    );
+    module(ui, None, "COMMIT LOG", &readout, |ui| {
+        ScrollArea::vertical()
+            .id_salt("history")
+            .auto_shrink([false, false])
+            .show_rows(ui, row_h, total, |ui, range| {
+                for i in range {
+                    if i == tab.commits.len() {
+                        let btn = HudButton::new("▼ LOAD MORE")
+                            .text_color(DIM)
+                            .min_size(vec2(ui.available_width(), row_h));
+                        if ui.add(btn).clicked() {
+                            load_more = true;
+                        }
+                    } else {
+                        commit_row(ui, tab, i, (body_h, small_h), &mut select);
                     }
-                } else {
-                    commit_row(ui, tab, i, (body_h, small_h), &mut select);
                 }
-            }
-        });
+            });
+    });
 
     if load_more {
         jobs.push(Job::LoadHistory {
@@ -54,6 +60,15 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         tab.diff = None;
         jobs.push(Job::LoadDiff { id: tab.id, key });
     }
+}
+
+/// Stable per-commit color so the graph rail reads as multi-lane, like the
+/// reference HUD, without computing real lanes.
+fn lane_color(id: &str) -> eframe::egui::Color32 {
+    let h = id
+        .bytes()
+        .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    LANES[h as usize % LANES.len()]
 }
 
 fn commit_row(
@@ -74,7 +89,7 @@ fn commit_row(
     let selected = matches!(&tab.selection, Some(DiffKey::Commit { id }) if *id == c.id);
     let p = ui.painter().with_clip_rect(rect);
     if selected {
-        p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(ACCENT, 30));
+        p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(ACCENT, 24));
     } else if resp.hovered() {
         p.rect_filled(rect, CornerRadius::ZERO, BG3);
     }
@@ -95,14 +110,23 @@ fn commit_row(
     let y1 = rect.top() + 4.0 + body_h / 2.0;
     let y2 = rect.bottom() - 4.0 - small_h / 2.0;
 
-    let glyph = if c.is_merge { "◆" } else { "●" };
-    p.text(
-        pos2(node_x, y1),
-        Align2::CENTER_CENTER,
-        glyph,
-        body_font.clone(),
-        DIM,
-    );
+    // Node: lane-colored; merges get a diamond, regular commits a ringed dot.
+    let lane = lane_color(&c.id);
+    if c.is_merge {
+        p.add(Shape::convex_polygon(
+            vec![
+                pos2(node_x, y1 - 4.0),
+                pos2(node_x + 4.0, y1),
+                pos2(node_x, y1 + 4.0),
+                pos2(node_x - 4.0, y1),
+            ],
+            lane,
+            Stroke::NONE,
+        ));
+    } else {
+        p.circle_stroke(pos2(node_x, y1), 3.5, Stroke::new(1.0, lane));
+        p.circle_filled(pos2(node_x, y1), 1.5, lane);
+    }
 
     let text_x = rect.left() + NODE_COL + 6.0;
 
@@ -125,9 +149,14 @@ fn commit_row(
 
     let mut cx = sum_rect.right() + 8.0;
     for r in &c.refs {
-        let color = if r.contains('/') { PURPLE } else { AMBER };
+        let color = if r.contains('/') {
+            crate::theme::PURPLE
+        } else {
+            crate::theme::AMBER
+        };
         let w = text_width(ui, r, &small_font) + 8.0;
         let chip = Rect::from_min_size(pos2(cx, y1 - small_h / 2.0 - 2.0), vec2(w, small_h + 4.0));
+        p.rect_filled(chip, CornerRadius::ZERO, theme::alpha(color, 26));
         p.rect_stroke(
             chip,
             CornerRadius::ZERO,
@@ -147,6 +176,15 @@ fn commit_row(
     let meta = format!("{} · {} · {}", c.short, c.author, rel_time(c.time));
     let meta = truncate_right(ui, &meta, &small_font, rect.right() - 6.0 - text_x);
     p.text(pos2(text_x, y2), Align2::LEFT_CENTER, meta, small_font, DIM);
+
+    // Selected rows get the glowing chamfered frame, the HUD "target lock".
+    if selected {
+        theme::glow_outline(
+            &p,
+            theme::chamfer(rect.shrink(1.0), 6.0),
+            theme::alpha(ACCENT, 200),
+        );
+    }
 
     if resp.clicked() {
         *select = Some(c.id.clone());

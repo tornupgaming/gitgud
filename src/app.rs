@@ -363,6 +363,9 @@ impl eframe::App for GitGudApp {
         let regained = focused && !self.prev_focused;
         self.prev_focused = focused;
 
+        // The gridded void every module floats over; panels are transparent.
+        theme::backdrop(ui.painter(), ui.max_rect());
+
         // Panels borrow the active tab mutably, so clicks are collected here
         // and sent after layout (avoids a second &mut borrow of self).
         let mut jobs: Vec<Job> = Vec::new();
@@ -382,7 +385,8 @@ impl eframe::App for GitGudApp {
         }
 
         let action = Panel::top("topbar")
-            .frame(Frame::new().fill(BG1).inner_margin(Margin::symmetric(8, 4)))
+            .exact_size(56.0)
+            .frame(Frame::new().inner_margin(Margin::symmetric(10, 6)))
             .show_inside(ui, |ui| ui::top_bar(ui, &self.tabs, self.active))
             .inner;
         match action {
@@ -404,7 +408,11 @@ impl eframe::App for GitGudApp {
 
         Panel::bottom("status")
             .exact_size(26.0)
-            .frame(Frame::new().fill(BG1).inner_margin(Margin::symmetric(8, 0)))
+            .frame(
+                Frame::new()
+                    .fill(BG1)
+                    .inner_margin(Margin::symmetric(10, 0)),
+            )
             .show_inside(ui, |ui| {
                 ui::status_bar(ui, self.tabs.get(self.active), self.app_log.as_ref());
             });
@@ -420,17 +428,37 @@ impl eframe::App for GitGudApp {
             let tab = &mut self.tabs[self.active];
             Panel::left("ops")
                 .resizable(true)
-                .default_size(290.0)
+                .default_size(300.0)
+                .frame(Frame::new().inner_margin(Margin {
+                    left: 10,
+                    right: 4,
+                    top: 2,
+                    bottom: 8,
+                }))
                 .show_inside(ui, |ui| ui::sidebar::show(ui, tab, &mut jobs));
             Panel::left("history")
                 .resizable(true)
                 .default_size(430.0)
+                .frame(Frame::new().inner_margin(Margin {
+                    left: 4,
+                    right: 4,
+                    top: 2,
+                    bottom: 8,
+                }))
                 .show_inside(ui, |ui| ui::history::show(ui, tab, &mut jobs));
-            CentralPanel::default().show_inside(ui, |ui| ui::diff::show(ui, tab));
+            CentralPanel::default()
+                .frame(Frame::new().inner_margin(Margin {
+                    left: 4,
+                    right: 10,
+                    top: 2,
+                    bottom: 8,
+                }))
+                .show_inside(ui, |ui| ui::diff::show(ui, tab));
         }
 
-        // Outer HUD bezel: corner brackets framing the whole console, drawn
-        // last so they sit above every panel.
+        // CRT scanlines over the whole frame, then the outer HUD bezel:
+        // corner brackets framing the console, drawn last so they sit on top.
+        theme::scanlines(ui.painter(), ui.max_rect());
         theme::corner_brackets(
             ui.painter(),
             ui.max_rect().shrink(2.0),

@@ -1,19 +1,23 @@
-//! Tactical-HUD theme: a proportional UI font with monospace reserved for
-//! code (the diff body), sharp corners, 1px borders, cyan glow on hover.
-//! All UI modules pull their colors from these consts.
+//! Sci-fi HUD theme: Rajdhani display font, chamfered glowing plates over a
+//! gridded void, CRT scanlines. All UI modules pull their colors and shape
+//! primitives from here.
+
+use std::sync::Arc;
 
 use eframe::egui::{
-    self, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Shape, Stroke, TextStyle, pos2,
+    self, Align, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId,
+    Painter, Pos2, Rect, Shadow, Shape, Stroke, TextStyle, pos2, vec2,
 };
 
-pub const BG0: Color32 = Color32::from_rgb(0x07, 0x0b, 0x12);
-pub const BG1: Color32 = Color32::from_rgb(0x0c, 0x12, 0x1d);
-pub const BG2: Color32 = Color32::from_rgb(0x13, 0x1b, 0x2a);
-pub const BG3: Color32 = Color32::from_rgb(0x1b, 0x26, 0x38);
-pub const BORDER: Color32 = Color32::from_rgb(0x20, 0x30, 0x4a);
+pub const BG0: Color32 = Color32::from_rgb(0x04, 0x07, 0x0d);
+pub const BG1: Color32 = Color32::from_rgb(0x0a, 0x10, 0x1b);
+pub const BG2: Color32 = Color32::from_rgb(0x10, 0x18, 0x28);
+pub const BG3: Color32 = Color32::from_rgb(0x1a, 0x26, 0x3a);
+pub const BORDER: Color32 = Color32::from_rgb(0x1e, 0x32, 0x52);
 
-pub const TEXT: Color32 = Color32::from_rgb(0xb8, 0xc7, 0xd9);
-pub const DIM: Color32 = Color32::from_rgb(0x5d, 0x72, 0x90);
+pub const TEXT: Color32 = Color32::from_rgb(0xbf, 0xd2, 0xe8);
+pub const BRIGHT: Color32 = Color32::from_rgb(0xe6, 0xf4, 0xff);
+pub const DIM: Color32 = Color32::from_rgb(0x52, 0x6a, 0x8c);
 
 pub const ACCENT: Color32 = Color32::from_rgb(0x35, 0xe0, 0xff);
 pub const AMBER: Color32 = Color32::from_rgb(0xff, 0xb4, 0x54);
@@ -21,17 +25,64 @@ pub const GREEN: Color32 = Color32::from_rgb(0x5a, 0xf7, 0x8e);
 pub const RED: Color32 = Color32::from_rgb(0xff, 0x5c, 0x57);
 pub const PURPLE: Color32 = Color32::from_rgb(0xb5, 0x8c, 0xff);
 
-/// `color` at the given alpha -- used for translucent diff/selection fills.
+/// Node colors for the commit graph -- picked per commit by hashing its id so
+/// the rail reads like the multi-lane graphs in game HUDs.
+pub const LANES: [Color32; 5] = [
+    ACCENT,
+    GREEN,
+    AMBER,
+    PURPLE,
+    Color32::from_rgb(0xff, 0x6b, 0xc5),
+];
+
+/// `color` at the given alpha -- used for translucent fills and glows.
 pub fn alpha(color: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
+}
+
+// --- Fonts ---------------------------------------------------------------
+
+/// Custom font family for headings/titles (Rajdhani SemiBold). Body text uses
+/// the default Proportional family, which `install_fonts` points at Rajdhani
+/// Medium.
+const DISPLAY_FAMILY: &str = "display";
+
+pub fn display_font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(DISPLAY_FAMILY.into()))
+}
+
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "rajdhani-medium".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../assets/fonts/Rajdhani-Medium.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        "rajdhani-semibold".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../assets/fonts/Rajdhani-SemiBold.ttf"
+        ))),
+    );
+    // Rajdhani first, then egui's defaults stay as fallback for the symbol
+    // glyphs (arrows, geometric shapes) Rajdhani doesn't cover.
+    let prop = fonts.families.entry(FontFamily::Proportional).or_default();
+    prop.insert(0, "rajdhani-medium".to_owned());
+    let mut display = prop.clone();
+    display[0] = "rajdhani-semibold".to_owned();
+    fonts
+        .families
+        .insert(FontFamily::Name(DISPLAY_FAMILY.into()), display);
+    ctx.set_fonts(fonts);
 }
 
 // --- Sci-fi HUD primitives ----------------------------------------------
 //
 // One shared shape language: every plate (buttons, panels, modals) traces a
 // rectangle with two opposite corners sliced off, framed with L-shaped corner
-// ticks and fading accent rules. These are plain painter helpers so any widget
-// can reach for them.
+// ticks, glow outlines, and fading accent rules. Plain painter helpers so any
+// widget can reach for them.
 
 /// The 6-point outline of `rect` with its top-right and bottom-left corners
 /// chamfered (cut at 45° by `c`). The silhouette the whole UI is built from.
@@ -50,6 +101,18 @@ pub fn chamfer(rect: Rect, c: f32) -> Vec<Pos2> {
 /// Fill and outline a chamfered plate in one call.
 pub fn plate(painter: &Painter, rect: Rect, c: f32, fill: Color32, stroke: Stroke) {
     painter.add(Shape::convex_polygon(chamfer(rect, c), fill, stroke));
+}
+
+/// Neon edge: a crisp 1px line over two widening translucent passes. egui has
+/// no blur, so stacked low-alpha strokes fake the bloom.
+pub fn glow_outline(painter: &Painter, points: Vec<Pos2>, color: Color32) {
+    for (w, a) in [(5.0, 16), (2.5, 44)] {
+        painter.add(Shape::closed_line(
+            points.clone(),
+            Stroke::new(w, alpha(color, a)),
+        ));
+    }
+    painter.add(Shape::closed_line(points, Stroke::new(1.0, color)));
 }
 
 /// L-shaped tick at each of the four corners of `rect` -- the signature HUD
@@ -84,37 +147,99 @@ pub fn fade_rule(painter: &Painter, start: Pos2, len: f32, color: Color32) {
     }
 }
 
-/// Tactical backdrop for the big "void" areas (empty state, etc.): a dark base
-/// washed with a faint cyan grid. Cheap -- a couple dozen lines, no per-pixel
-/// work -- and drawn behind content so it never touches text legibility.
+/// Letter-spaced text, the HUD-typography workhorse. egui has no tracking, so
+/// each glyph is laid out and drawn individually. Returns the painted rect.
+/// Only used for short labels (titles, buttons), so the per-glyph galleys are
+/// cheap.
+pub fn tracked_text(
+    painter: &Painter,
+    pos: Pos2,
+    anchor: Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    tracking: f32,
+) -> Rect {
+    let galleys: Vec<_> = text
+        .chars()
+        .map(|ch| painter.layout_no_wrap(ch.to_string(), font.clone(), color))
+        .collect();
+    let width: f32 = galleys.iter().map(|g| g.size().x).sum::<f32>()
+        + tracking * galleys.len().saturating_sub(1) as f32;
+    let height = galleys.iter().map(|g| g.size().y).fold(0.0, f32::max);
+    let min_x = match anchor.x() {
+        Align::Min => pos.x,
+        Align::Center => pos.x - width / 2.0,
+        Align::Max => pos.x - width,
+    };
+    let min_y = match anchor.y() {
+        Align::Min => pos.y,
+        Align::Center => pos.y - height / 2.0,
+        Align::Max => pos.y - height,
+    };
+    let mut x = min_x;
+    for g in galleys {
+        let w = g.size().x;
+        painter.galley(pos2(x, min_y), g, color);
+        x += w + tracking;
+    }
+    Rect::from_min_size(pos2(min_x, min_y), vec2(width, height))
+}
+
+/// Tactical backdrop for the void behind the floating modules: near-black base
+/// washed with a faint cyan grid, every fourth line slightly brighter. Cheap --
+/// a few dozen lines, no per-pixel work.
 pub fn backdrop(painter: &Painter, rect: Rect) {
     painter.rect_filled(rect, CornerRadius::ZERO, BG0);
-    let step = 30.0;
-    let stroke = Stroke::new(1.0, alpha(ACCENT, 10));
+    let step = 26.0;
+    let mut i = 0;
     let mut x = rect.left() + step;
     while x < rect.right() {
-        painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], stroke);
+        let a = if i % 4 == 0 { 16 } else { 7 };
+        painter.line_segment(
+            [pos2(x, rect.top()), pos2(x, rect.bottom())],
+            Stroke::new(1.0, alpha(ACCENT, a)),
+        );
         x += step;
+        i += 1;
     }
+    i = 0;
     let mut y = rect.top() + step;
     while y < rect.bottom() {
-        painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], stroke);
+        let a = if i % 4 == 0 { 16 } else { 7 };
+        painter.line_segment(
+            [pos2(rect.left(), y), pos2(rect.right(), y)],
+            Stroke::new(1.0, alpha(ACCENT, a)),
+        );
         y += step;
+        i += 1;
+    }
+}
+
+/// CRT scanlines: a 1px darkening line every 3pt, drawn over the whole frame.
+/// Alpha is low enough to read as texture, not stripes.
+pub fn scanlines(painter: &Painter, rect: Rect) {
+    let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 0, 0, 26));
+    let mut y = rect.top();
+    while y < rect.bottom() {
+        painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], stroke);
+        y += 3.0;
     }
 }
 
 pub fn apply(ctx: &egui::Context) {
+    install_fonts(ctx);
     let mut style = (*ctx.global_style()).clone();
 
-    // Proportional for all chrome/labels; Monospace stays a fixed-width font
-    // and is resolved explicitly by the diff viewer, where column alignment
-    // and line-number gutters depend on every glyph having the same width.
+    // Rajdhani for all chrome/labels; Monospace stays a fixed-width font and
+    // is resolved explicitly by the diff viewer, where column alignment and
+    // line-number gutters depend on every glyph having the same width.
     style.text_styles = [
-        (TextStyle::Heading, FontId::proportional(17.0)),
-        (TextStyle::Body, FontId::proportional(14.0)),
+        (TextStyle::Heading, display_font(20.0)),
+        (TextStyle::Body, FontId::proportional(15.0)),
         (TextStyle::Monospace, FontId::monospace(13.0)),
-        (TextStyle::Button, FontId::proportional(14.0)),
-        (TextStyle::Small, FontId::proportional(11.0)),
+        (TextStyle::Button, FontId::proportional(15.0)),
+        (TextStyle::Small, FontId::proportional(12.0)),
     ]
     .into();
 
@@ -122,19 +247,32 @@ pub fn apply(ctx: &egui::Context) {
     // HUD chrome rather than an OS overlay.
     let sc = &mut style.spacing.scroll;
     sc.floating = false;
-    sc.bar_width = 9.0;
+    sc.bar_width = 8.0;
     sc.bar_inner_margin = 2.0;
 
     let v = &mut style.visuals;
     v.dark_mode = true;
-    v.panel_fill = BG1;
+    v.panel_fill = Color32::TRANSPARENT;
     v.window_fill = BG1;
     v.extreme_bg_color = BG0;
     // Row stripe: halfway between panel and widget background.
-    v.faint_bg_color = Color32::from_rgb(0x0f, 0x16, 0x23);
-    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.faint_bg_color = Color32::from_rgb(0x0d, 0x14, 0x21);
+    v.window_stroke = Stroke::new(1.0, ACCENT);
     v.window_corner_radius = CornerRadius::ZERO;
     v.menu_corner_radius = CornerRadius::ZERO;
+    // Cyan bloom instead of drop shadows: dialogs glow, they don't float.
+    v.window_shadow = Shadow {
+        offset: [0, 0],
+        blur: 24,
+        spread: 2,
+        color: alpha(ACCENT, 45),
+    };
+    v.popup_shadow = Shadow {
+        offset: [0, 0],
+        blur: 12,
+        spread: 1,
+        color: alpha(ACCENT, 35),
+    };
     v.selection.bg_fill = alpha(ACCENT, 45);
     v.selection.stroke = Stroke::new(1.0, ACCENT);
     v.hyperlink_color = ACCENT;
@@ -164,7 +302,7 @@ pub fn apply(ctx: &egui::Context) {
     w.hovered.bg_fill = BG3;
     w.hovered.weak_bg_fill = BG3;
     w.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
-    w.hovered.fg_stroke = Stroke::new(1.0, Color32::from_rgb(0xd9, 0xe6, 0xf5));
+    w.hovered.fg_stroke = Stroke::new(1.0, BRIGHT);
 
     w.active.bg_fill = BG3;
     w.active.weak_bg_fill = BG3;

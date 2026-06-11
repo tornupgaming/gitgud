@@ -1,10 +1,11 @@
 //! `HudButton` -- the app's single stylised button.
 //!
-//! It's an angular HUD "plate": the top-right and bottom-left corners are
-//! chamfered (cut at 45°), a faint diagonal hatch textures the left side, and
-//! the 1px border lights up cyan when you hover -- the same "glow" idea the
-//! rest of the theme uses, just made into a reusable widget. Every clickable
-//! action in the app routes through this so the look stays consistent.
+//! An angular HUD "plate": the top-right and bottom-left corners are chamfered
+//! (cut at 45°), a faint diagonal hatch textures the left side, the label is
+//! letter-spaced caps, and the border lights up cyan with a bloom when you
+//! hover. The `accent` variant is the always-lit primary action (COMMIT, the
+//! modal confirm). Every clickable action in the app routes through this so
+//! the look stays consistent.
 //!
 //! It implements [`egui::Widget`], so it drops into the usual call sites:
 //! `ui.add(HudButton::new("FETCH"))` or `ui.add_enabled(ready, HudButton::…)`.
@@ -14,7 +15,10 @@ use eframe::egui::{
 };
 
 use super::text_width;
-use crate::theme::{self, ACCENT, BG1, BG2, BG3, BORDER, DIM, TEXT};
+use crate::theme::{self, ACCENT, BG1, BG2, BG3, BORDER, BRIGHT, DIM, TEXT};
+
+/// Letter-spacing applied to every button label.
+const TRACKING: f32 = 1.2;
 
 pub struct HudButton {
     text: String,
@@ -24,6 +28,10 @@ pub struct HudButton {
     min_size: Vec2,
     /// Smaller font + no hatch, for inline/secondary actions.
     small: bool,
+    /// Always-lit primary action: accent fill, accent border, constant glow.
+    accent: bool,
+    /// Dim keyboard-shortcut hint drawn at the right edge (e.g. "CTRL+ENTER").
+    hint: Option<String>,
 }
 
 impl HudButton {
@@ -33,6 +41,8 @@ impl HudButton {
             text_color: None,
             min_size: Vec2::ZERO,
             small: false,
+            accent: false,
+            hint: None,
         }
     }
 
@@ -53,6 +63,18 @@ impl HudButton {
         self.small = small;
         self
     }
+
+    /// Primary-action styling: accent fill and a constant glow.
+    pub fn accent(mut self, accent: bool) -> Self {
+        self.accent = accent;
+        self
+    }
+
+    /// Keyboard-shortcut hint, right-aligned inside the plate.
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
 }
 
 impl Widget for HudButton {
@@ -64,7 +86,8 @@ impl Widget for HudButton {
         };
         let font = text_style.resolve(ui.style());
         let text_h = ui.text_style_height(&text_style);
-        let label_w = text_width(ui, &self.text, &font);
+        let label_w = text_width(ui, &self.text, &font)
+            + TRACKING * self.text.chars().count().saturating_sub(1) as f32;
 
         // Inner padding, plus extra room on the right so the chamfer never bites
         // into the label.
@@ -86,11 +109,13 @@ impl Widget for HudButton {
         // the dimmed look. `hot` = the lit, cyan-framed state.
         let enabled = ui.is_enabled();
         let hot = enabled && resp.hovered();
+        let lit = self.accent && enabled;
 
         // Cut the top-right and bottom-left corners so the tile reads as an
         // angular HUD plate -- the same silhouette panels and modals use.
         let c = chamfer;
         let (l, t, b) = (rect.left(), rect.top(), rect.bottom());
+        let outline = theme::chamfer(rect, c);
 
         let fill = if !enabled {
             BG1
@@ -99,20 +124,33 @@ impl Widget for HudButton {
         } else {
             BG2
         };
-        let border = if hot { ACCENT } else { BORDER };
 
         let painter = ui.painter();
-
-        // Soft "glow": a wide, translucent accent outline behind the crisp
-        // border. egui has no blur, so a fat low-alpha stroke fakes it.
-        if hot {
-            painter.add(Shape::closed_line(
-                theme::chamfer(rect, c),
-                Stroke::new(4.0, theme::alpha(ACCENT, 40)),
+        painter.add(Shape::convex_polygon(outline.clone(), fill, Stroke::NONE));
+        if lit {
+            // Accent wash over the base fill so the plate reads as energised.
+            painter.add(Shape::convex_polygon(
+                outline.clone(),
+                theme::alpha(ACCENT, if hot { 50 } else { 28 }),
+                Stroke::NONE,
             ));
         }
 
-        theme::plate(painter, rect, c, fill, Stroke::new(1.0, border));
+        if lit || hot {
+            theme::glow_outline(painter, outline, ACCENT);
+        } else {
+            painter.add(Shape::closed_line(
+                outline,
+                Stroke::new(
+                    1.0,
+                    if enabled {
+                        BORDER
+                    } else {
+                        theme::alpha(BORDER, 120)
+                    },
+                ),
+            ));
+        }
 
         // Faint diagonal hatch on the left, echoing the reference art. Clipped
         // to a band so the 45° strokes never poke past the chamfered corners.
@@ -120,7 +158,8 @@ impl Widget for HudButton {
             let band_w = (rect.width() * 0.4).min(64.0);
             let band = Rect::from_min_max(pos2(l + c, t + 2.0), pos2(l + c + band_w, b - 2.0));
             let hp = ui.painter().with_clip_rect(band);
-            let hatch = Stroke::new(1.0, theme::alpha(if hot { ACCENT } else { BORDER }, 26));
+            let hatch_color = if lit || hot { ACCENT } else { BORDER };
+            let hatch = Stroke::new(1.0, theme::alpha(hatch_color, 26));
             let h = band.height();
             let mut x = band.left() - h;
             while x < band.right() {
@@ -131,18 +170,35 @@ impl Widget for HudButton {
 
         let text_color = self.text_color.unwrap_or(if !enabled {
             DIM
-        } else if hot {
-            Color32::from_rgb(0xd9, 0xe6, 0xf5)
+        } else if lit || hot {
+            BRIGHT
         } else {
             TEXT
         });
-        ui.painter().text(
+        theme::tracked_text(
+            ui.painter(),
             rect.center(),
             Align2::CENTER_CENTER,
             &self.text,
             font,
             text_color,
+            TRACKING,
         );
+        if let Some(hint) = &self.hint {
+            theme::tracked_text(
+                ui.painter(),
+                pos2(rect.right() - c - 6.0, rect.center().y),
+                Align2::RIGHT_CENTER,
+                hint,
+                theme::display_font(10.0),
+                if enabled {
+                    theme::alpha(ACCENT, 170)
+                } else {
+                    DIM
+                },
+                1.0,
+            );
+        }
 
         resp
     }

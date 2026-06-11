@@ -1,20 +1,24 @@
-//! Central diff viewer. The diff arrives as nested `DiffData`; we flatten it
-//! once into `DiffView` rows so the per-frame render is a plain index walk
-//! that `show_rows` can virtualize.
+//! Central diff viewer (the DIFF ANALYSIS module). The diff arrives as nested
+//! `DiffData`; we flatten it once into `DiffView` rows so the per-frame render
+//! is a plain index walk that `show_rows` can virtualize.
 
 use eframe::egui::{
-    Align, Align2, CornerRadius, Frame, Label, Layout, Margin, Rect, RichText, ScrollArea, Sense,
-    Spinner, Stroke, TextStyle, Ui, pos2, vec2,
+    Align2, CornerRadius, Rect, ScrollArea, Sense, Spinner, Stroke, StrokeKind, TextStyle, Ui,
+    pos2, vec2,
 };
 
-use super::char_w;
+use super::{char_w, module, text_width, truncate_right};
 use crate::app::RepoTab;
 use crate::git::{DiffData, DiffKey, DiffLine, LineKind};
-use crate::theme::{self, ACCENT, BG2, BORDER, DIM, GREEN, RED, TEXT};
+use crate::theme::{self, ACCENT, AMBER, BG2, BORDER, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// Right-aligned digits reserved per line-number gutter column.
 const GUTTER_CHARS: f32 = 4.0;
-const RATIO_BAR_W: f32 = 120.0;
+/// Segmented add/delete ratio bar: cell count and geometry.
+const RATIO_CELLS: usize = 24;
+const RATIO_CELL_W: f32 = 4.0;
+const RATIO_GAP: f32 = 2.0;
+const RATIO_BAR_W: f32 = RATIO_CELLS as f32 * (RATIO_CELL_W + RATIO_GAP) - RATIO_GAP;
 
 pub struct DiffView {
     pub adds: usize,
@@ -57,93 +61,140 @@ impl DiffView {
 }
 
 pub fn show(ui: &mut Ui, tab: &RepoTab) {
-    let Some(key) = &tab.selection else {
-        theme::backdrop(ui.painter(), ui.max_rect());
-        ui.add_space(ui.available_height() * 0.45);
-        ui.vertical_centered(|ui| ui.label(RichText::new("◧ select a file or commit").color(DIM)));
-        return;
+    let readout = match (&tab.selection, &tab.diff) {
+        (None, _) => "STANDBY".to_owned(),
+        (Some(_), None) => "SCANNING".to_owned(),
+        (Some(_), Some(v)) => format!("+{} −{}", v.adds, v.dels),
     };
-    let Some(view) = &tab.diff else {
-        // Selection made but the worker hasn't answered yet.
-        theme::backdrop(ui.painter(), ui.max_rect());
-        ui.add_space(ui.available_height() * 0.45);
-        ui.vertical_centered(|ui| ui.add(Spinner::new().size(24.0).color(ACCENT)));
-        return;
-    };
-
-    // Header sits on its own band: a darker plate with a left accent tick and
-    // an accent rule fading off below it.
-    let band = Frame::new()
-        .fill(BG2)
-        .inner_margin(Margin::symmetric(8, 5))
-        .show(ui, |ui| header(ui, tab, key, view))
-        .response
-        .rect;
-    let p = ui.painter();
-    p.rect_filled(
-        Rect::from_min_size(band.min, vec2(3.0, band.height())),
-        CornerRadius::ZERO,
-        ACCENT,
-    );
-    p.line_segment(
-        [
-            pos2(band.left(), band.bottom()),
-            pos2(band.right(), band.bottom()),
-        ],
-        Stroke::new(1.0, theme::alpha(ACCENT, 60)),
-    );
-    theme::fade_rule(
-        p,
-        pos2(band.left(), band.bottom() + 2.0),
-        band.width() * 0.6,
-        ACCENT,
-    );
-    ui.add_space(3.0);
-    body(ui, view);
-}
-
-fn header(ui: &mut Ui, tab: &RepoTab, key: &DiffKey, view: &DiffView) {
-    let title = match key {
-        DiffKey::Workdir { path, staged } => {
-            format!("{path} — {}", if *staged { "staged" } else { "unstaged" })
-        }
-        DiffKey::Commit { id } => match tab.commits.iter().find(|c| c.id == *id) {
-            Some(c) => format!("commit {} — {}", c.short, c.summary),
-            None => format!("commit {}", &id[..id.len().min(7)]),
-        },
-    };
-    // The right-to-left ui must live inside `horizontal`: a bare `with_layout`
-    // grabs ALL remaining panel height and would center this row in it,
-    // leaving no room for the diff body below.
-    ui.horizontal(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ratio_bar(ui, view.adds, view.dels);
-            ui.label(RichText::new(format!("−{}", view.dels)).color(RED));
-            ui.label(RichText::new(format!("+{}", view.adds)).color(GREEN));
-            ui.add(Label::new(RichText::new(title).color(TEXT)).truncate());
-        });
+    module(ui, None, "DIFF ANALYSIS", &readout, |ui| {
+        let Some(key) = &tab.selection else {
+            standby(ui);
+            return;
+        };
+        let Some(view) = &tab.diff else {
+            // Selection made but the worker hasn't answered yet.
+            ui.add_space(ui.available_height() * 0.45);
+            ui.vertical_centered(|ui| ui.add(Spinner::new().size(24.0).color(ACCENT)));
+            return;
+        };
+        header(ui, tab, key, view);
+        ui.add_space(4.0);
+        body(ui, view);
     });
 }
 
-fn ratio_bar(ui: &mut Ui, adds: usize, dels: usize) {
-    let (rect, _) = ui.allocate_exact_size(vec2(RATIO_BAR_W, 8.0), Sense::hover());
-    let p = ui.painter();
-    let total = adds + dels;
-    if total == 0 {
-        p.rect_filled(rect, CornerRadius::ZERO, BORDER);
-        return;
-    }
-    let split = rect.left() + rect.width() * adds as f32 / total as f32;
-    p.rect_filled(
-        Rect::from_min_max(rect.min, pos2(split, rect.bottom())),
-        CornerRadius::ZERO,
-        GREEN,
+/// Idle screen: a bracketed "no target" readout in the module's center.
+fn standby(ui: &mut Ui) {
+    ui.add_space(ui.available_height() * 0.45);
+    let cx = ui.max_rect().center().x;
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+    let text = theme::tracked_text(
+        ui.painter(),
+        pos2(cx, r.center().y),
+        Align2::CENTER_CENTER,
+        "AWAITING TARGET · SELECT A FILE OR COMMIT",
+        theme::display_font(12.0),
+        DIM,
+        2.0,
     );
-    p.rect_filled(
-        Rect::from_min_max(pos2(split, rect.top()), rect.max),
+    theme::corner_brackets(
+        ui.painter(),
+        text.expand2(vec2(14.0, 8.0)),
+        8.0,
+        Stroke::new(1.0, theme::alpha(ACCENT, 120)),
+    );
+}
+
+fn header(ui: &mut Ui, tab: &RepoTab, key: &DiffKey, view: &DiffView) {
+    let (tag, tag_color, title) = match key {
+        DiffKey::Workdir { path, staged } => {
+            if *staged {
+                ("STAGED", GREEN, path.clone())
+            } else {
+                ("UNSTAGED", AMBER, path.clone())
+            }
+        }
+        DiffKey::Commit { id } => {
+            let title = match tab.commits.iter().find(|c| c.id == *id) {
+                Some(c) => format!("{} · {}", c.short, c.summary),
+                None => id[..id.len().min(7)].to_owned(),
+            };
+            ("COMMIT", PURPLE, title)
+        }
+    };
+
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let p = ui.painter();
+    let y = rect.center().y;
+    let small = TextStyle::Small.resolve(ui.style());
+    let body = TextStyle::Body.resolve(ui.style());
+
+    let tag_w = text_width(ui, tag, &small) + 12.0;
+    let chip = Rect::from_min_size(pos2(rect.left(), y - 9.0), vec2(tag_w, 18.0));
+    p.rect_filled(chip, CornerRadius::ZERO, theme::alpha(tag_color, 26));
+    p.rect_stroke(
+        chip,
         CornerRadius::ZERO,
+        Stroke::new(1.0, tag_color),
+        StrokeKind::Inside,
+    );
+    p.text(chip.center(), Align2::CENTER_CENTER, tag, small, tag_color);
+
+    let bar = Rect::from_min_size(
+        pos2(rect.right() - RATIO_BAR_W, y - 4.0),
+        vec2(RATIO_BAR_W, 8.0),
+    );
+    ratio_bar(p, bar, view.adds, view.dels);
+    let r = p.text(
+        pos2(bar.left() - 12.0, y),
+        Align2::RIGHT_CENTER,
+        format!("−{}", view.dels),
+        body.clone(),
         RED,
     );
+    let r = p.text(
+        pos2(r.left() - 8.0, y),
+        Align2::RIGHT_CENTER,
+        format!("+{}", view.adds),
+        body.clone(),
+        GREEN,
+    );
+
+    let text_x = chip.right() + 10.0;
+    let title = truncate_right(ui, &title, &body, r.left() - 12.0 - text_x);
+    p.text(pos2(text_x, y), Align2::LEFT_CENTER, title, body, BRIGHT);
+
+    theme::fade_rule(
+        p,
+        pos2(rect.left(), rect.bottom() + 1.0),
+        rect.width() * 0.7,
+        ACCENT,
+    );
+}
+
+/// Add/delete ratio as a row of discrete cells -- an instrument readout, not
+/// a progress bar.
+fn ratio_bar(p: &eframe::egui::Painter, rect: Rect, adds: usize, dels: usize) {
+    let total = adds + dels;
+    let green_cells = if total == 0 {
+        0
+    } else {
+        // Round so a tiny-but-nonzero side still shows at least one cell.
+        ((adds as f32 / total as f32 * RATIO_CELLS as f32).round() as usize)
+            .clamp(usize::from(adds > 0), RATIO_CELLS - usize::from(dels > 0))
+    };
+    for i in 0..RATIO_CELLS {
+        let x = rect.left() + i as f32 * (RATIO_CELL_W + RATIO_GAP);
+        let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(RATIO_CELL_W, rect.height()));
+        let color = if total == 0 {
+            BORDER
+        } else if i < green_cells {
+            GREEN
+        } else {
+            RED
+        };
+        p.rect_filled(cell, CornerRadius::ZERO, color);
+    }
 }
 
 fn body(ui: &mut Ui, view: &DiffView) {
@@ -167,10 +218,9 @@ fn body(ui: &mut Ui, view: &DiffView) {
                 match &view.rows[i] {
                     DiffRow::File { path, adds, dels } => {
                         p.rect_filled(rect, CornerRadius::ZERO, BG2);
-                        p.rect_filled(
-                            Rect::from_min_size(rect.min, vec2(3.0, rect.height())),
-                            CornerRadius::ZERO,
-                            ACCENT,
+                        p.line_segment(
+                            [rect.left_bottom(), rect.right_bottom()],
+                            Stroke::new(1.0, theme::alpha(ACCENT, 90)),
                         );
                         let r = p.text(
                             pos2(rect.right() - 6.0, y),
@@ -187,11 +237,11 @@ fn body(ui: &mut Ui, view: &DiffView) {
                             GREEN,
                         );
                         p.text(
-                            pos2(rect.left() + 10.0, y),
+                            pos2(rect.left() + 8.0, y),
                             Align2::LEFT_CENTER,
-                            path,
+                            format!("▶ {path}"),
                             font.clone(),
-                            TEXT,
+                            BRIGHT,
                         );
                     }
                     DiffRow::Binary => {
@@ -207,7 +257,9 @@ fn body(ui: &mut Ui, view: &DiffView) {
                         let (color, bg) = match l.kind {
                             LineKind::Add => (GREEN, Some(theme::alpha(GREEN, 14))),
                             LineKind::Del => (RED, Some(theme::alpha(RED, 14))),
-                            LineKind::Hunk => (DIM, Some(ui.visuals().faint_bg_color)),
+                            LineKind::Hunk => {
+                                (theme::alpha(ACCENT, 170), Some(theme::alpha(ACCENT, 10)))
+                            }
                             LineKind::Ctx => (TEXT, None),
                         };
                         if let Some(bg) = bg {
@@ -232,6 +284,12 @@ fn body(ui: &mut Ui, view: &DiffView) {
                                     DIM,
                                 );
                             }
+                            // Gutter rule separating line numbers from code.
+                            let gx = rect.left() + gutter_w - 6.0;
+                            p.line_segment(
+                                [pos2(gx, rect.top()), pos2(gx, rect.bottom())],
+                                Stroke::new(1.0, theme::alpha(BORDER, 160)),
+                            );
                         }
                         p.text(
                             pos2(rect.left() + gutter_w, y),
