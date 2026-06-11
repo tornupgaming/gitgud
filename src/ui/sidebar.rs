@@ -5,7 +5,7 @@ use eframe::egui::{
     Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
-use super::{char_w, section_header, truncate_left};
+use super::{section_header, truncate_left};
 use crate::app::RepoTab;
 use crate::git::{ChangeKind, DiffKey, Job};
 use crate::theme::{self, ACCENT, AMBER, BG1, BG3, DIM, GREEN, PURPLE, RED, TEXT};
@@ -148,7 +148,6 @@ fn list_header(ui: &mut Ui, label: &str, action: &str, enabled: bool) -> bool {
 fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) {
     let font = TextStyle::Body.resolve(ui.style());
     let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
-    let cw = char_w(ui, &font);
     let btn_w = 16.0;
 
     // Record clicks during the walk and mutate `tab` after the loop -- we
@@ -181,7 +180,7 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
         p.text(pos2(rect.left() + 4.0, y), Align2::LEFT_CENTER, f.kind.glyph(), font.clone(), glyph_color);
 
         let text_w = rect.width() - 20.0 - btn_w - 12.0;
-        let path = truncate_left(&f.path, (text_w / cw) as usize);
+        let path = truncate_left(ui, &f.path, &font, text_w);
         p.text(pos2(rect.left() + 20.0, y), Align2::LEFT_CENTER, path, font.clone(), TEXT);
 
         let btn_rect = Rect::from_center_size(pos2(rect.right() - 4.0 - btn_w / 2.0, y), vec2(btn_w, btn_w));

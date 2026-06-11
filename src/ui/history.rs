@@ -5,7 +5,7 @@ use eframe::egui::{
     TextStyle, Ui, pos2, vec2,
 };
 
-use super::{char_w, section_header, truncate_right};
+use super::{section_header, text_width, truncate_right};
 use crate::app::RepoTab;
 use crate::git::{DiffKey, Job};
 use crate::theme::{self, ACCENT, AMBER, BG3, BORDER, DIM, PURPLE, TEXT};
@@ -87,19 +87,18 @@ fn commit_row(ui: &mut Ui, tab: &RepoTab, i: usize, heights: (f32, f32), select:
     p.text(pos2(node_x, y1), Align2::CENTER_CENTER, glyph, body_font.clone(), DIM);
 
     let text_x = rect.left() + NODE_COL + 6.0;
-    let bw = char_w(ui, &body_font);
-    let sw = char_w(ui, &small_font);
 
-    // Leave room for the ref chips so the summary truncates, not the chips.
-    let chips_w: f32 = c.refs.iter().map(|r| r.chars().count() as f32 * sw + 14.0).sum();
-    let avail = (rect.right() - 6.0 - text_x - chips_w).max(3.0 * bw);
-    let summary = truncate_right(&c.summary, (avail / bw) as usize);
+    // Leave room for the ref chips (their text plus 8px of box padding and a
+    // 6px gap) so the summary truncates, not the chips.
+    let chips_w: f32 = c.refs.iter().map(|r| text_width(ui, r, &small_font) + 14.0).sum();
+    let avail = (rect.right() - 6.0 - text_x - chips_w).max(text_width(ui, "…", &body_font));
+    let summary = truncate_right(ui, &c.summary, &body_font, avail);
     let sum_rect = p.text(pos2(text_x, y1), Align2::LEFT_CENTER, summary, body_font, TEXT);
 
     let mut cx = sum_rect.right() + 8.0;
     for r in &c.refs {
         let color = if r.contains('/') { PURPLE } else { AMBER };
-        let w = r.chars().count() as f32 * sw + 8.0;
+        let w = text_width(ui, r, &small_font) + 8.0;
         let chip = Rect::from_min_size(pos2(cx, y1 - small_h / 2.0 - 2.0), vec2(w, small_h + 4.0));
         p.rect_stroke(chip, CornerRadius::ZERO, Stroke::new(1.0, color), StrokeKind::Inside);
         p.text(chip.center(), Align2::CENTER_CENTER, r, small_font.clone(), color);
@@ -107,7 +106,7 @@ fn commit_row(ui: &mut Ui, tab: &RepoTab, i: usize, heights: (f32, f32), select:
     }
 
     let meta = format!("{} · {} · {}", c.short, c.author, rel_time(c.time));
-    let meta = truncate_right(&meta, ((rect.right() - 6.0 - text_x) / sw) as usize);
+    let meta = truncate_right(ui, &meta, &small_font, rect.right() - 6.0 - text_x);
     p.text(pos2(text_x, y2), Align2::LEFT_CENTER, meta, small_font, DIM);
 
     if resp.clicked() {

@@ -116,27 +116,61 @@ pub(crate) fn section_header(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).small().color(DIM));
 }
 
-/// Monospace glyph width -- all sizing math assumes one width per font.
+/// Monospace glyph width -- the diff viewer's gutter math assumes one width
+/// per font, which holds for its fixed-width font.
 pub(crate) fn char_w(ui: &Ui, font: &FontId) -> f32 {
     ui.ctx().fonts_mut(|f| f.glyph_width(font, 'M'))
 }
 
-/// Truncate keeping the *end* of the string (so filenames stay visible).
-pub(crate) fn truncate_left(s: &str, max_chars: usize) -> String {
-    let n = s.chars().count();
-    if n <= max_chars {
-        return s.to_owned();
-    }
-    let keep = max_chars.saturating_sub(1);
-    let tail: String = s.chars().skip(n - keep).collect();
-    format!("…{tail}")
+/// Rendered width of `s` in `font`, in points. egui lays text out glyph by
+/// glyph with no kerning, so summing glyph advances is exactly the width it
+/// will draw -- accurate for proportional fonts, not just monospace.
+pub(crate) fn text_width(ui: &Ui, s: &str, font: &FontId) -> f32 {
+    ui.ctx().fonts_mut(|f| s.chars().map(|c| f.glyph_width(font, c)).sum())
 }
 
-/// Truncate keeping the *start* of the string.
-pub(crate) fn truncate_right(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_owned();
-    }
-    let head: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-    format!("{head}…")
+/// Truncate keeping the *end* of the string (so filenames stay visible), so it
+/// renders within `max_w` points; a leading "…" marks where it was cut.
+pub(crate) fn truncate_left(ui: &Ui, s: &str, font: &FontId, max_w: f32) -> String {
+    ui.ctx().fonts_mut(|f| {
+        if s.chars().map(|c| f.glyph_width(font, c)).sum::<f32>() <= max_w {
+            return s.to_owned();
+        }
+        let budget = (max_w - f.glyph_width(font, '…')).max(0.0);
+        let mut used = 0.0;
+        let mut keep = 0;
+        // Walk from the end, keeping as many trailing chars as fit the budget.
+        for c in s.chars().rev() {
+            let w = f.glyph_width(font, c);
+            if used + w > budget {
+                break;
+            }
+            used += w;
+            keep += 1;
+        }
+        let tail: String = s.chars().skip(s.chars().count() - keep).collect();
+        format!("…{tail}")
+    })
+}
+
+/// Truncate keeping the *start* of the string so it renders within `max_w`
+/// points; a trailing "…" marks where it was cut.
+pub(crate) fn truncate_right(ui: &Ui, s: &str, font: &FontId, max_w: f32) -> String {
+    ui.ctx().fonts_mut(|f| {
+        if s.chars().map(|c| f.glyph_width(font, c)).sum::<f32>() <= max_w {
+            return s.to_owned();
+        }
+        let budget = (max_w - f.glyph_width(font, '…')).max(0.0);
+        let mut used = 0.0;
+        let mut head = String::new();
+        for c in s.chars() {
+            let w = f.glyph_width(font, c);
+            if used + w > budget {
+                break;
+            }
+            used += w;
+            head.push(c);
+        }
+        format!("{head}…")
+    })
 }
