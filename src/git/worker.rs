@@ -41,7 +41,10 @@ impl GitWorker {
             }
         });
 
-        Self { jobs: job_tx, updates: upd_rx }
+        Self {
+            jobs: job_tx,
+            updates: upd_rx,
+        }
     }
 
     pub fn send(&self, job: Job) {
@@ -66,7 +69,10 @@ fn run_job(
         Job::Open { id, path } => Some(match ops::open(&path) {
             Ok((repo, meta)) => {
                 repos.insert(id, (repo, meta.workdir.clone()));
-                Update::Opened { id, result: Ok(meta) }
+                Update::Opened {
+                    id,
+                    result: Ok(meta),
+                }
             }
             Err(e) => Update::Opened { id, result: Err(e) },
         }),
@@ -76,11 +82,17 @@ fn run_job(
         }
         Job::Refresh { id } => {
             let (repo, _) = repos.get(&id)?;
-            Some(Update::Refreshed { id, result: ops::refresh(repo) })
+            Some(Update::Refreshed {
+                id,
+                result: ops::refresh(repo),
+            })
         }
         Job::LoadHistory { id, skip } => {
             let (repo, _) = repos.get(&id)?;
-            Some(Update::History { id, result: ops::history(repo, skip, super::HISTORY_PAGE) })
+            Some(Update::History {
+                id,
+                result: ops::history(repo, skip, super::HISTORY_PAGE),
+            })
         }
         Job::LoadDiff { id, key } => {
             let (repo, _) = repos.get(&id)?;
@@ -90,22 +102,38 @@ fn run_job(
         Job::Stage { id, path } => {
             let (repo, _) = repos.get(&id)?;
             let result = ops::stage(repo, path.as_deref());
-            Some(Update::Acted { id, kind: ActionKind::Stage, result })
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::Stage,
+                result,
+            })
         }
         Job::Unstage { id, path } => {
             let (repo, _) = repos.get(&id)?;
             let result = ops::unstage(repo, path.as_deref());
-            Some(Update::Acted { id, kind: ActionKind::Unstage, result })
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::Unstage,
+                result,
+            })
         }
         Job::Commit { id, message } => {
             let (repo, _) = repos.get(&id)?;
             let result = ops::commit(repo, &message);
-            Some(Update::Acted { id, kind: ActionKind::Commit, result })
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::Commit,
+                result,
+            })
         }
         Job::Checkout { id, branch } => {
             let (repo, _) = repos.get(&id)?;
             let result = ops::checkout(repo, &branch);
-            Some(Update::Acted { id, kind: ActionKind::Checkout, result })
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::Checkout,
+                result,
+            })
         }
         Job::Fetch { id } => {
             // Network can take seconds; run it on its own thread so local
@@ -116,7 +144,11 @@ fn run_job(
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
                 let result = ops::fetch(&workdir);
-                let _ = tx.send(Update::Acted { id, kind: ActionKind::Fetch, result });
+                let _ = tx.send(Update::Acted {
+                    id,
+                    kind: ActionKind::Fetch,
+                    result,
+                });
                 ctx.request_repaint();
             });
             None
@@ -130,7 +162,11 @@ fn run_job(
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
                 let result = ops::push(&workdir);
-                let _ = tx.send(Update::Acted { id, kind: ActionKind::Push, result });
+                let _ = tx.send(Update::Acted {
+                    id,
+                    kind: ActionKind::Push,
+                    result,
+                });
                 ctx.request_repaint();
             });
             None

@@ -1,8 +1,7 @@
 //! Virtualized commit history list ("history" side panel).
 
 use eframe::egui::{
-    Align2, CornerRadius, Rect, ScrollArea, Sense, Stroke, StrokeKind,
-    TextStyle, Ui, pos2, vec2,
+    Align2, CornerRadius, Rect, ScrollArea, Sense, Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
 };
 
 use super::{HudButton, section_header, text_width, truncate_right};
@@ -44,7 +43,10 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         });
 
     if load_more {
-        jobs.push(Job::LoadHistory { id: tab.id, skip: tab.commits.len() });
+        jobs.push(Job::LoadHistory {
+            id: tab.id,
+            skip: tab.commits.len(),
+        });
     }
     if let Some(id) = select {
         let key = DiffKey::Commit { id };
@@ -54,7 +56,13 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     }
 }
 
-fn commit_row(ui: &mut Ui, tab: &RepoTab, i: usize, heights: (f32, f32), select: &mut Option<String>) {
+fn commit_row(
+    ui: &mut Ui,
+    tab: &RepoTab,
+    i: usize,
+    heights: (f32, f32),
+    select: &mut Option<String>,
+) {
     let c = &tab.commits[i];
     let (body_h, small_h) = heights;
     let row_h = body_h + small_h + 8.0;
@@ -75,7 +83,10 @@ fn commit_row(ui: &mut Ui, tab: &RepoTab, i: usize, heights: (f32, f32), select:
     let node_x = rect.left() + NODE_COL / 2.0;
     let gap = ui.spacing().item_spacing.y / 2.0;
     ui.painter().line_segment(
-        [pos2(node_x, rect.top() - gap), pos2(node_x, rect.bottom() + gap)],
+        [
+            pos2(node_x, rect.top() - gap),
+            pos2(node_x, rect.bottom() + gap),
+        ],
         Stroke::new(1.0, BORDER),
     );
 
@@ -85,24 +96,51 @@ fn commit_row(ui: &mut Ui, tab: &RepoTab, i: usize, heights: (f32, f32), select:
     let y2 = rect.bottom() - 4.0 - small_h / 2.0;
 
     let glyph = if c.is_merge { "◆" } else { "●" };
-    p.text(pos2(node_x, y1), Align2::CENTER_CENTER, glyph, body_font.clone(), DIM);
+    p.text(
+        pos2(node_x, y1),
+        Align2::CENTER_CENTER,
+        glyph,
+        body_font.clone(),
+        DIM,
+    );
 
     let text_x = rect.left() + NODE_COL + 6.0;
 
     // Leave room for the ref chips (their text plus 8px of box padding and a
     // 6px gap) so the summary truncates, not the chips.
-    let chips_w: f32 = c.refs.iter().map(|r| text_width(ui, r, &small_font) + 14.0).sum();
+    let chips_w: f32 = c
+        .refs
+        .iter()
+        .map(|r| text_width(ui, r, &small_font) + 14.0)
+        .sum();
     let avail = (rect.right() - 6.0 - text_x - chips_w).max(text_width(ui, "…", &body_font));
     let summary = truncate_right(ui, &c.summary, &body_font, avail);
-    let sum_rect = p.text(pos2(text_x, y1), Align2::LEFT_CENTER, summary, body_font, TEXT);
+    let sum_rect = p.text(
+        pos2(text_x, y1),
+        Align2::LEFT_CENTER,
+        summary,
+        body_font,
+        TEXT,
+    );
 
     let mut cx = sum_rect.right() + 8.0;
     for r in &c.refs {
         let color = if r.contains('/') { PURPLE } else { AMBER };
         let w = text_width(ui, r, &small_font) + 8.0;
         let chip = Rect::from_min_size(pos2(cx, y1 - small_h / 2.0 - 2.0), vec2(w, small_h + 4.0));
-        p.rect_stroke(chip, CornerRadius::ZERO, Stroke::new(1.0, color), StrokeKind::Inside);
-        p.text(chip.center(), Align2::CENTER_CENTER, r, small_font.clone(), color);
+        p.rect_stroke(
+            chip,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, color),
+            StrokeKind::Inside,
+        );
+        p.text(
+            chip.center(),
+            Align2::CENTER_CENTER,
+            r,
+            small_font.clone(),
+            color,
+        );
         cx += w + 6.0;
     }
 

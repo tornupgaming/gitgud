@@ -58,7 +58,13 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
             if name.ends_with("/HEAD") {
                 continue;
             }
-            remotes.push(BranchInfo { name, is_head: false, is_remote: true, ahead: 0, behind: 0 });
+            remotes.push(BranchInfo {
+                name,
+                is_head: false,
+                is_remote: true,
+                ahead: 0,
+                behind: 0,
+            });
             continue;
         }
         let (ahead, behind) = match (branch.get().target(), branch.upstream()) {
@@ -68,7 +74,13 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
             },
             _ => (0, 0), // no upstream configured
         };
-        locals.push(BranchInfo { name, is_head: branch.is_head(), is_remote: false, ahead, behind });
+        locals.push(BranchInfo {
+            name,
+            is_head: branch.is_head(),
+            is_remote: false,
+            ahead,
+            behind,
+        });
     }
     locals.sort_by(|a, b| a.name.cmp(&b.name));
     remotes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -99,7 +111,10 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
         .into_iter()
         .find(|(flag, _)| s.contains(*flag));
         if let Some((_, kind)) = index_kind {
-            staged.push(FileChange { path: path.clone(), kind });
+            staged.push(FileChange {
+                path: path.clone(),
+                kind,
+            });
         }
         let wt_kind = [
             (Status::CONFLICTED, ChangeKind::Conflicted),
@@ -118,7 +133,13 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
     staged.sort_by(|a, b| a.path.cmp(&b.path));
     unstaged.sort_by(|a, b| a.path.cmp(&b.path));
 
-    Ok(RefreshData { head, head_detached, branches: locals, staged, unstaged })
+    Ok(RefreshData {
+        head,
+        head_detached,
+        branches: locals,
+        staged,
+        unstaged,
+    })
 }
 
 /// Current branch name, short id when detached, or the future branch name
@@ -136,7 +157,10 @@ fn head_label(repo: &Repository) -> Result<(String, bool), String> {
         Err(e) if e.code() == ErrorCode::UnbornBranch => {
             // New repo: HEAD points at a branch that has no commit yet.
             let head_ref = repo.find_reference("HEAD").map_err(g)?;
-            let target = head_ref.symbolic_target().map_err(g)?.unwrap_or("refs/heads/main");
+            let target = head_ref
+                .symbolic_target()
+                .map_err(g)?
+                .unwrap_or("refs/heads/main");
             Ok((target.trim_start_matches("refs/heads/").to_string(), false))
         }
         Err(e) => Err(g(e)),
@@ -150,7 +174,11 @@ fn short_id(oid: Oid) -> String {
 pub fn history(repo: &Repository, skip: usize, limit: usize) -> Result<HistoryPage, String> {
     match repo.head() {
         Err(e) if e.code() == ErrorCode::UnbornBranch => {
-            return Ok(HistoryPage { skip, commits: Vec::new(), reached_end: true });
+            return Ok(HistoryPage {
+                skip,
+                commits: Vec::new(),
+                reached_end: true,
+            });
         }
         Err(e) => return Err(g(e)),
         Ok(_) => {}
@@ -172,7 +200,8 @@ pub fn history(repo: &Repository, skip: usize, limit: usize) -> Result<HistoryPa
     let mut walk = repo.revwalk().map_err(g)?;
     // TOPOLOGICAL breaks ties between commits sharing the same second --
     // plain TIME shows those in arbitrary order.
-    walk.set_sorting(Sort::TIME | Sort::TOPOLOGICAL).map_err(g)?;
+    walk.set_sorting(Sort::TIME | Sort::TOPOLOGICAL)
+        .map_err(g)?;
     walk.push_head().map_err(g)?;
 
     let mut commits = Vec::new();
@@ -198,7 +227,11 @@ pub fn history(repo: &Repository, skip: usize, limit: usize) -> Result<HistoryPa
             refs: decorations.get(&oid).cloned().unwrap_or_default(),
         });
     }
-    Ok(HistoryPage { skip, commits, reached_end })
+    Ok(HistoryPage {
+        skip,
+        commits,
+        reached_end,
+    })
 }
 
 /// Mutable accumulator shared by the four `foreach` callbacks. Each closure
@@ -215,14 +248,18 @@ struct DiffState {
 
 pub fn diff(repo: &Repository, key: &DiffKey) -> Result<DiffData, String> {
     let diff = match key {
-        DiffKey::Workdir { path, staged: false } => {
+        DiffKey::Workdir {
+            path,
+            staged: false,
+        } => {
             let mut opts = DiffOptions::new();
             opts.pathspec(path)
                 .include_untracked(true)
                 .show_untracked_content(true)
                 .recurse_untracked_dirs(true)
                 .context_lines(3);
-            repo.diff_index_to_workdir(None, Some(&mut opts)).map_err(g)?
+            repo.diff_index_to_workdir(None, Some(&mut opts))
+                .map_err(g)?
         }
         DiffKey::Workdir { path, staged: true } => {
             let mut opts = DiffOptions::new();
@@ -230,7 +267,8 @@ pub fn diff(repo: &Repository, key: &DiffKey) -> Result<DiffData, String> {
             // Unborn HEAD has no tree; diffing index against "nothing" shows
             // the very first staged files as pure additions.
             let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-            repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts)).map_err(g)?
+            repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
+                .map_err(g)?
         }
         DiffKey::Commit { id } => {
             let oid = Oid::from_str(id).map_err(g)?;
@@ -241,7 +279,8 @@ pub fn diff(repo: &Repository, key: &DiffKey) -> Result<DiffData, String> {
                 Ok(parent) => Some(parent.tree().map_err(g)?),
                 Err(_) => None,
             };
-            repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None).map_err(g)?
+            repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)
+                .map_err(g)?
         }
     };
 
@@ -274,8 +313,18 @@ pub fn diff(repo: &Repository, key: &DiffKey) -> Result<DiffData, String> {
         if s.line_count >= DIFF_LINE_CAP {
             return truncate(&mut s);
         }
-        let text = String::from_utf8_lossy(hunk.header()).trim_end_matches(['\n', '\r']).to_string();
-        push_line(&mut s, DiffLine { kind: LineKind::Hunk, old_no: 0, new_no: 0, text });
+        let text = String::from_utf8_lossy(hunk.header())
+            .trim_end_matches(['\n', '\r'])
+            .to_string();
+        push_line(
+            &mut s,
+            DiffLine {
+                kind: LineKind::Hunk,
+                old_no: 0,
+                new_no: 0,
+                text,
+            },
+        );
         true
     };
     let mut line_cb = |_delta: git2::DiffDelta<'_>,
@@ -304,23 +353,37 @@ pub fn diff(repo: &Repository, key: &DiffKey) -> Result<DiffData, String> {
                 _ => {}
             }
         }
-        let text = String::from_utf8_lossy(line.content()).trim_end_matches(['\n', '\r']).to_string();
-        push_line(&mut s, DiffLine {
-            kind,
-            old_no: line.old_lineno().unwrap_or(0),
-            new_no: line.new_lineno().unwrap_or(0),
-            text,
-        });
+        let text = String::from_utf8_lossy(line.content())
+            .trim_end_matches(['\n', '\r'])
+            .to_string();
+        push_line(
+            &mut s,
+            DiffLine {
+                kind,
+                old_no: line.old_lineno().unwrap_or(0),
+                new_no: line.new_lineno().unwrap_or(0),
+                text,
+            },
+        );
         true
     };
 
-    let result = diff.foreach(&mut file_cb, Some(&mut binary_cb), Some(&mut hunk_cb), Some(&mut line_cb));
+    let result = diff.foreach(
+        &mut file_cb,
+        Some(&mut binary_cb),
+        Some(&mut hunk_cb),
+        Some(&mut line_cb),
+    );
     let state = state.into_inner();
     match result {
         // Returning `false` from a callback makes foreach report an error;
         // when *we* aborted (cap reached) the partial diff is still valid.
         Err(e) if !state.truncated => Err(g(e)),
-        _ => Ok(DiffData { files: state.files, adds: state.adds, dels: state.dels }),
+        _ => Ok(DiffData {
+            files: state.files,
+            adds: state.adds,
+            dels: state.dels,
+        }),
     }
 }
 
@@ -352,7 +415,10 @@ pub fn stage(repo: &Repository, path: Option<&str>) -> Result<String, String> {
     let label = match path {
         Some(path) => {
             let rel = Path::new(path);
-            let on_disk = repo.workdir().map(|w| w.join(rel).exists()).unwrap_or(false);
+            let on_disk = repo
+                .workdir()
+                .map(|w| w.join(rel).exists())
+                .unwrap_or(false);
             if on_disk {
                 index.add_path(rel).map_err(g)?;
             } else {
@@ -365,7 +431,9 @@ pub fn stage(repo: &Repository, path: Option<&str>) -> Result<String, String> {
         None => {
             // add_all stages new + modified files; update_all additionally
             // records deletions of already-tracked files.
-            index.add_all(["*"], IndexAddOption::DEFAULT, None).map_err(g)?;
+            index
+                .add_all(["*"], IndexAddOption::DEFAULT, None)
+                .map_err(g)?;
             index.update_all(["*"], None).map_err(g)?;
             "all changes".to_string()
         }
@@ -427,7 +495,10 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
     // "origin/feature" -> create/find local "feature" tracking it.
     let local = match repo.find_branch(branch, BranchType::Remote) {
         Ok(remote) => {
-            let local_name = branch.split_once('/').map(|(_, rest)| rest).unwrap_or(branch);
+            let local_name = branch
+                .split_once('/')
+                .map(|(_, rest)| rest)
+                .unwrap_or(branch);
             if repo.find_branch(local_name, BranchType::Local).is_err() {
                 let tip = remote.get().peel_to_commit().map_err(g)?;
                 let mut created = repo.branch(local_name, &tip, false).map_err(g)?;
@@ -441,7 +512,8 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
     let obj = repo.revparse_single(&local).map_err(g)?;
     // `safe()` refuses to overwrite local modifications; libgit2's error
     // message ("1 conflict prevents checkout") is descriptive, pass it on.
-    repo.checkout_tree(&obj, Some(CheckoutBuilder::new().safe())).map_err(g)?;
+    repo.checkout_tree(&obj, Some(CheckoutBuilder::new().safe()))
+        .map_err(g)?;
     repo.set_head(&format!("refs/heads/{local}")).map_err(g)?;
     Ok(format!("switched to {local}"))
 }
@@ -461,7 +533,11 @@ pub fn push(workdir: &Path) -> Result<String, String> {
     // (the default `simple` pushes HEAD to its upstream of the same name).
     // `--set-upstream` makes the very first push of a new branch also record
     // its tracking ref, so later pushes need no arguments either.
-    let stderr = run_git(workdir, &["push", "--set-upstream", "origin", "HEAD"], "git push failed")?;
+    let stderr = run_git(
+        workdir,
+        &["push", "--set-upstream", "origin", "HEAD"],
+        "git push failed",
+    )?;
     let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
     match last_line {
         // "Everything up-to-date" already reads as a full status message.

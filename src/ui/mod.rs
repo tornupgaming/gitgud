@@ -74,9 +74,18 @@ pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAct
     let bar = ui.clip_rect();
     let y = bar.bottom() - 0.5;
     let p = ui.painter();
-    p.line_segment([pos2(bar.left(), y), pos2(bar.right(), y)], Stroke::new(1.0, theme::alpha(ACCENT, 90)));
-    p.line_segment([pos2(bar.left(), y), pos2(bar.left() + 10.0, y)], Stroke::new(1.5, ACCENT));
-    p.line_segment([pos2(bar.right() - 10.0, y), pos2(bar.right(), y)], Stroke::new(1.5, ACCENT));
+    p.line_segment(
+        [pos2(bar.left(), y), pos2(bar.right(), y)],
+        Stroke::new(1.0, theme::alpha(ACCENT, 90)),
+    );
+    p.line_segment(
+        [pos2(bar.left(), y), pos2(bar.left() + 10.0, y)],
+        Stroke::new(1.5, ACCENT),
+    );
+    p.line_segment(
+        [pos2(bar.right() - 10.0, y), pos2(bar.right(), y)],
+        Stroke::new(1.5, ACCENT),
+    );
     action
 }
 
@@ -85,7 +94,10 @@ pub fn status_bar(ui: &mut Ui, tab: Option<&RepoTab>, app_log: Option<&(bool, St
     // Accent hairline along the bar's top edge (the busy scanline rides above).
     let top = ui.clip_rect().top() + 0.5;
     ui.painter().line_segment(
-        [pos2(ui.clip_rect().left(), top), pos2(ui.clip_rect().right(), top)],
+        [
+            pos2(ui.clip_rect().left(), top),
+            pos2(ui.clip_rect().right(), top),
+        ],
         Stroke::new(1.0, theme::alpha(ACCENT, 70)),
     );
     ui.horizontal_centered(|ui| {
@@ -122,18 +134,31 @@ pub fn empty_state(ui: &mut Ui) -> bool {
     // Gridded backdrop + an outer HUD frame to fill the void behind the logo.
     let area = ui.max_rect();
     theme::backdrop(ui.painter(), area);
-    theme::corner_brackets(ui.painter(), area.shrink(18.0), 22.0, Stroke::new(1.5, ACCENT));
+    theme::corner_brackets(
+        ui.painter(),
+        area.shrink(18.0),
+        22.0,
+        Stroke::new(1.5, ACCENT),
+    );
 
     ui.add_space(ui.available_height() * 0.30);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new("▰▰ GITGUD").font(FontId::monospace(28.0)).color(ACCENT));
+        ui.label(
+            RichText::new("▰▰ GITGUD")
+                .font(FontId::monospace(28.0))
+                .color(ACCENT),
+        );
         ui.label(RichText::new("tactical git operations console").color(DIM));
         ui.add_space(16.0);
         open = ui
             .add(HudButton::new("OPEN REPOSITORY").min_size(vec2(190.0, 30.0)))
             .clicked();
         ui.add_space(8.0);
-        ui.label(RichText::new("or drop a folder anywhere").small().color(DIM));
+        ui.label(
+            RichText::new("or drop a folder anywhere")
+                .small()
+                .color(DIM),
+        );
     });
     open
 }
@@ -148,12 +173,26 @@ pub(crate) fn section_header(ui: &mut Ui, text: &str) {
     let p = ui.painter();
     // Leading accent tick.
     p.rect_filled(
-        Rect::from_min_size(pos2(rect.left(), rect.top() + 3.0), vec2(3.0, rect.height() - 6.0)),
+        Rect::from_min_size(
+            pos2(rect.left(), rect.top() + 3.0),
+            vec2(3.0, rect.height() - 6.0),
+        ),
         CornerRadius::ZERO,
         ACCENT,
     );
-    let tr = p.text(pos2(rect.left() + 10.0, y), Align2::LEFT_CENTER, text, font, DIM);
-    theme::fade_rule(p, pos2(tr.right() + 8.0, y), rect.right() - tr.right() - 8.0, ACCENT);
+    let tr = p.text(
+        pos2(rect.left() + 10.0, y),
+        Align2::LEFT_CENTER,
+        text,
+        font,
+        DIM,
+    );
+    theme::fade_rule(
+        p,
+        pos2(tr.right() + 8.0, y),
+        rect.right() - tr.right() - 8.0,
+        ACCENT,
+    );
 }
 
 /// Monospace glyph width -- the diff viewer's gutter math assumes one width
@@ -166,7 +205,8 @@ pub(crate) fn char_w(ui: &Ui, font: &FontId) -> f32 {
 /// glyph with no kerning, so summing glyph advances is exactly the width it
 /// will draw -- accurate for proportional fonts, not just monospace.
 pub(crate) fn text_width(ui: &Ui, s: &str, font: &FontId) -> f32 {
-    ui.ctx().fonts_mut(|f| s.chars().map(|c| f.glyph_width(font, c)).sum())
+    ui.ctx()
+        .fonts_mut(|f| s.chars().map(|c| f.glyph_width(font, c)).sum())
 }
 
 /// Truncate keeping the *end* of the string (so filenames stay visible), so it

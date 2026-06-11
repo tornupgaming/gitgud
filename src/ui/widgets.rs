@@ -57,14 +57,22 @@ impl HudButton {
 
 impl Widget for HudButton {
     fn ui(self, ui: &mut Ui) -> Response {
-        let text_style = if self.small { TextStyle::Small } else { TextStyle::Button };
+        let text_style = if self.small {
+            TextStyle::Small
+        } else {
+            TextStyle::Button
+        };
         let font = text_style.resolve(ui.style());
         let text_h = ui.text_style_height(&text_style);
         let label_w = text_width(ui, &self.text, &font);
 
         // Inner padding, plus extra room on the right so the chamfer never bites
         // into the label.
-        let pad = if self.small { vec2(10.0, 3.0) } else { vec2(16.0, 6.0) };
+        let pad = if self.small {
+            vec2(10.0, 3.0)
+        } else {
+            vec2(16.0, 6.0)
+        };
         let chamfer = (text_h * 0.5 + pad.y).min(14.0);
         let desired = vec2(label_w + pad.x * 2.0 + chamfer, text_h + pad.y * 2.0);
         let size = desired.max(self.min_size);
@@ -128,8 +136,13 @@ impl Widget for HudButton {
         } else {
             TEXT
         });
-        ui.painter()
-            .text(rect.center(), Align2::CENTER_CENTER, &self.text, font, text_color);
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            &self.text,
+            font,
+            text_color,
+        );
 
         resp
     }

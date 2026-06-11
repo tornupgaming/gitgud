@@ -23,7 +23,11 @@ pub struct DiffView {
 }
 
 pub enum DiffRow {
-    File { path: String, adds: usize, dels: usize },
+    File {
+        path: String,
+        adds: usize,
+        dels: usize,
+    },
     Binary,
     Line(DiffLine),
 }
@@ -33,14 +37,22 @@ impl DiffView {
         let mut rows = Vec::new();
         for f in data.files {
             let binary = f.binary;
-            rows.push(DiffRow::File { path: f.path, adds: f.adds, dels: f.dels });
+            rows.push(DiffRow::File {
+                path: f.path,
+                adds: f.adds,
+                dels: f.dels,
+            });
             if binary {
                 rows.push(DiffRow::Binary);
             } else {
                 rows.extend(f.lines.into_iter().map(DiffRow::Line));
             }
         }
-        Self { adds: data.adds, dels: data.dels, rows }
+        Self {
+            adds: data.adds,
+            dels: data.dels,
+            rows,
+        }
     }
 }
 
@@ -74,10 +86,18 @@ pub fn show(ui: &mut Ui, tab: &RepoTab) {
         ACCENT,
     );
     p.line_segment(
-        [pos2(band.left(), band.bottom()), pos2(band.right(), band.bottom())],
+        [
+            pos2(band.left(), band.bottom()),
+            pos2(band.right(), band.bottom()),
+        ],
         Stroke::new(1.0, theme::alpha(ACCENT, 60)),
     );
-    theme::fade_rule(p, pos2(band.left(), band.bottom() + 2.0), band.width() * 0.6, ACCENT);
+    theme::fade_rule(
+        p,
+        pos2(band.left(), band.bottom() + 2.0),
+        band.width() * 0.6,
+        ACCENT,
+    );
     ui.add_space(3.0);
     body(ui, view);
 }
@@ -114,8 +134,16 @@ fn ratio_bar(ui: &mut Ui, adds: usize, dels: usize) {
         return;
     }
     let split = rect.left() + rect.width() * adds as f32 / total as f32;
-    p.rect_filled(Rect::from_min_max(rect.min, pos2(split, rect.bottom())), CornerRadius::ZERO, GREEN);
-    p.rect_filled(Rect::from_min_max(pos2(split, rect.top()), rect.max), CornerRadius::ZERO, RED);
+    p.rect_filled(
+        Rect::from_min_max(rect.min, pos2(split, rect.bottom())),
+        CornerRadius::ZERO,
+        GREEN,
+    );
+    p.rect_filled(
+        Rect::from_min_max(pos2(split, rect.top()), rect.max),
+        CornerRadius::ZERO,
+        RED,
+    );
 }
 
 fn body(ui: &mut Ui, view: &DiffView) {
@@ -129,7 +157,8 @@ fn body(ui: &mut Ui, view: &DiffView) {
         .auto_shrink([false, false])
         .show_rows(ui, row_h, view.rows.len(), |ui, range| {
             for i in range {
-                let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
+                let (rect, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
                 if !ui.is_rect_visible(rect) {
                     continue;
                 }
@@ -143,12 +172,36 @@ fn body(ui: &mut Ui, view: &DiffView) {
                             CornerRadius::ZERO,
                             ACCENT,
                         );
-                        let r = p.text(pos2(rect.right() - 6.0, y), Align2::RIGHT_CENTER, format!("−{dels}"), font.clone(), RED);
-                        p.text(pos2(r.left() - 8.0, y), Align2::RIGHT_CENTER, format!("+{adds}"), font.clone(), GREEN);
-                        p.text(pos2(rect.left() + 10.0, y), Align2::LEFT_CENTER, path, font.clone(), TEXT);
+                        let r = p.text(
+                            pos2(rect.right() - 6.0, y),
+                            Align2::RIGHT_CENTER,
+                            format!("−{dels}"),
+                            font.clone(),
+                            RED,
+                        );
+                        p.text(
+                            pos2(r.left() - 8.0, y),
+                            Align2::RIGHT_CENTER,
+                            format!("+{adds}"),
+                            font.clone(),
+                            GREEN,
+                        );
+                        p.text(
+                            pos2(rect.left() + 10.0, y),
+                            Align2::LEFT_CENTER,
+                            path,
+                            font.clone(),
+                            TEXT,
+                        );
                     }
                     DiffRow::Binary => {
-                        p.text(pos2(rect.left() + gutter_w, y), Align2::LEFT_CENTER, "binary file", font.clone(), DIM);
+                        p.text(
+                            pos2(rect.left() + gutter_w, y),
+                            Align2::LEFT_CENTER,
+                            "binary file",
+                            font.clone(),
+                            DIM,
+                        );
                     }
                     DiffRow::Line(l) => {
                         let (color, bg) = match l.kind {
@@ -162,13 +215,31 @@ fn body(ui: &mut Ui, view: &DiffView) {
                         }
                         if l.kind != LineKind::Hunk {
                             if l.old_no > 0 {
-                                p.text(pos2(rect.left() + cw * GUTTER_CHARS + 4.0, y), Align2::RIGHT_CENTER, l.old_no, font.clone(), DIM);
+                                p.text(
+                                    pos2(rect.left() + cw * GUTTER_CHARS + 4.0, y),
+                                    Align2::RIGHT_CENTER,
+                                    l.old_no,
+                                    font.clone(),
+                                    DIM,
+                                );
                             }
                             if l.new_no > 0 {
-                                p.text(pos2(rect.left() + cw * 2.0 * GUTTER_CHARS + 8.0, y), Align2::RIGHT_CENTER, l.new_no, font.clone(), DIM);
+                                p.text(
+                                    pos2(rect.left() + cw * 2.0 * GUTTER_CHARS + 8.0, y),
+                                    Align2::RIGHT_CENTER,
+                                    l.new_no,
+                                    font.clone(),
+                                    DIM,
+                                );
                             }
                         }
-                        p.text(pos2(rect.left() + gutter_w, y), Align2::LEFT_CENTER, &l.text, font.clone(), color);
+                        p.text(
+                            pos2(rect.left() + gutter_w, y),
+                            Align2::LEFT_CENTER,
+                            &l.text,
+                            font.clone(),
+                            color,
+                        );
                     }
                 }
             }

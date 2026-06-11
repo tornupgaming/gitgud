@@ -1,8 +1,8 @@
 //! Left "ops" panel: branches, working-tree changes, and the commit box.
 
 use eframe::egui::{
-    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Modal, Panel,
-    Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
+    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Modal, Panel, Rect,
+    RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
 use super::{HudButton, section_header, truncate_left};
@@ -39,7 +39,9 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 /// Modal shown while a branch switch is pending. Returns the checkout job only
 /// once the user confirms; clicking away, Escape, or Cancel aborts it.
 fn confirm_checkout(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    let Some(branch) = tab.pending_checkout.clone() else { return };
+    let Some(branch) = tab.pending_checkout.clone() else {
+        return;
+    };
     let dirty = !tab.staged.is_empty() || !tab.unstaged.is_empty();
 
     // Angular HUD dialog: accent frame, dimmed gridless backdrop, a header
@@ -55,7 +57,12 @@ fn confirm_checkout(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             ui.set_width(264.0);
             ui.label(RichText::new("◤ CONFIRM CHECKOUT").small().color(ACCENT));
             let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-            theme::fade_rule(ui.painter(), pos2(rule.left(), rule.center().y), rule.width(), ACCENT);
+            theme::fade_rule(
+                ui.painter(),
+                pos2(rule.left(), rule.center().y),
+                rule.width(),
+                ACCENT,
+            );
             ui.add_space(4.0);
             ui.label(RichText::new("Switch branch?").strong());
             ui.add_space(6.0);
@@ -71,7 +78,9 @@ fn confirm_checkout(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             ui.add_space(12.0);
             let buttons = ui
                 .with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let switch = ui.add(HudButton::new("Switch").text_color(ACCENT)).clicked();
+                    let switch = ui
+                        .add(HudButton::new("Switch").text_color(ACCENT))
+                        .clicked();
                     let cancel = ui.add(HudButton::new("Cancel")).clicked();
                     (switch, cancel)
                 })
@@ -102,7 +111,8 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<String> {
 
     let mut clicked = None;
     for b in &tab.branches {
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+        let (rect, resp) =
+            ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
         if !ui.is_rect_visible(rect) {
             continue;
         }
@@ -112,19 +122,49 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<String> {
         }
         let y = rect.center().y;
         if b.is_remote {
-            p.text(pos2(rect.left() + 4.0, y), Align2::LEFT_CENTER, format!("◦ {}", b.name), font.clone(), PURPLE);
+            p.text(
+                pos2(rect.left() + 4.0, y),
+                Align2::LEFT_CENTER,
+                format!("◦ {}", b.name),
+                font.clone(),
+                PURPLE,
+            );
         } else {
             if b.is_head {
-                p.text(pos2(rect.left() + 4.0, y), Align2::LEFT_CENTER, "▶", font.clone(), AMBER);
+                p.text(
+                    pos2(rect.left() + 4.0, y),
+                    Align2::LEFT_CENTER,
+                    "▶",
+                    font.clone(),
+                    AMBER,
+                );
             }
-            p.text(pos2(rect.left() + 20.0, y), Align2::LEFT_CENTER, &b.name, font.clone(), TEXT);
+            p.text(
+                pos2(rect.left() + 20.0, y),
+                Align2::LEFT_CENTER,
+                &b.name,
+                font.clone(),
+                TEXT,
+            );
             let mut right = rect.right() - 4.0;
             if b.behind > 0 {
-                let r = p.text(pos2(right, y), Align2::RIGHT_CENTER, format!("↓{}", b.behind), font.clone(), RED);
+                let r = p.text(
+                    pos2(right, y),
+                    Align2::RIGHT_CENTER,
+                    format!("↓{}", b.behind),
+                    font.clone(),
+                    RED,
+                );
                 right = r.left() - 6.0;
             }
             if b.ahead > 0 {
-                p.text(pos2(right, y), Align2::RIGHT_CENTER, format!("↑{}", b.ahead), font.clone(), GREEN);
+                p.text(
+                    pos2(right, y),
+                    Align2::RIGHT_CENTER,
+                    format!("↑{}", b.ahead),
+                    font.clone(),
+                    GREEN,
+                );
             }
         }
         if resp.clicked() && !b.is_head {
@@ -142,13 +182,19 @@ fn changes(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         .show(ui, |ui| {
             let staged_label = format!("STAGED ({})", tab.staged.len());
             if list_header(ui, &staged_label, "UNSTAGE ALL", !tab.staged.is_empty()) {
-                jobs.push(Job::Unstage { id: tab.id, path: None });
+                jobs.push(Job::Unstage {
+                    id: tab.id,
+                    path: None,
+                });
             }
             file_rows(ui, tab, true, jobs);
             ui.add_space(8.0);
             let unstaged_label = format!("UNSTAGED ({})", tab.unstaged.len());
             if list_header(ui, &unstaged_label, "STAGE ALL", !tab.unstaged.is_empty()) {
-                jobs.push(Job::Stage { id: tab.id, path: None });
+                jobs.push(Job::Stage {
+                    id: tab.id,
+                    path: None,
+                });
             }
             file_rows(ui, tab, false, jobs);
         });
@@ -178,11 +224,15 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
 
     let files = if staged { &tab.staged } else { &tab.unstaged };
     for f in files {
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+        let (rect, resp) =
+            ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
         if !ui.is_rect_visible(rect) {
             continue;
         }
-        let key = DiffKey::Workdir { path: f.path.clone(), staged };
+        let key = DiffKey::Workdir {
+            path: f.path.clone(),
+            staged,
+        };
         let selected = tab.selection.as_ref() == Some(&key);
         let p = ui.painter().with_clip_rect(rect);
         if selected {
@@ -198,20 +248,46 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
             ChangeKind::Modified => AMBER,
             _ => DIM,
         };
-        p.text(pos2(rect.left() + 4.0, y), Align2::LEFT_CENTER, f.kind.glyph(), font.clone(), glyph_color);
+        p.text(
+            pos2(rect.left() + 4.0, y),
+            Align2::LEFT_CENTER,
+            f.kind.glyph(),
+            font.clone(),
+            glyph_color,
+        );
 
         let text_w = rect.width() - 20.0 - btn_w - 12.0;
         let path = truncate_left(ui, &f.path, &font, text_w);
-        p.text(pos2(rect.left() + 20.0, y), Align2::LEFT_CENTER, path, font.clone(), TEXT);
+        p.text(
+            pos2(rect.left() + 20.0, y),
+            Align2::LEFT_CENTER,
+            path,
+            font.clone(),
+            TEXT,
+        );
 
-        let btn_rect = Rect::from_center_size(pos2(rect.right() - 4.0 - btn_w / 2.0, y), vec2(btn_w, btn_w));
+        let btn_rect = Rect::from_center_size(
+            pos2(rect.right() - 4.0 - btn_w / 2.0, y),
+            vec2(btn_w, btn_w),
+        );
         let btn = ui.interact(btn_rect, resp.id.with("toggle"), Sense::click());
         if btn.hovered() {
             p.rect_filled(btn_rect, CornerRadius::ZERO, BG3);
-            p.rect_stroke(btn_rect, CornerRadius::ZERO, Stroke::new(1.0, ACCENT), StrokeKind::Inside);
+            p.rect_stroke(
+                btn_rect,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, ACCENT),
+                StrokeKind::Inside,
+            );
         }
         let (label, label_color) = if staged { ("−", RED) } else { ("+", GREEN) };
-        p.text(btn_rect.center(), Align2::CENTER_CENTER, label, font.clone(), label_color);
+        p.text(
+            btn_rect.center(),
+            Align2::CENTER_CENTER,
+            label,
+            font.clone(),
+            label_color,
+        );
 
         if btn.clicked() {
             toggle = Some(f.path.clone());
@@ -222,9 +298,15 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
 
     if let Some(path) = toggle {
         jobs.push(if staged {
-            Job::Unstage { id: tab.id, path: Some(path) }
+            Job::Unstage {
+                id: tab.id,
+                path: Some(path),
+            }
         } else {
-            Job::Stage { id: tab.id, path: Some(path) }
+            Job::Stage {
+                id: tab.id,
+                path: Some(path),
+            }
         });
     }
     if let Some(key) = select {
@@ -249,6 +331,9 @@ fn commit_box(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         .text_color(color)
         .min_size(vec2(ui.available_width(), 26.0));
     if ui.add_enabled(enabled, button).clicked() {
-        jobs.push(Job::Commit { id: tab.id, message: tab.commit_msg.clone() });
+        jobs.push(Job::Commit {
+            id: tab.id,
+            message: tab.commit_msg.clone(),
+        });
     }
 }

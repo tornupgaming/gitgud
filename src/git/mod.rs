@@ -25,37 +25,83 @@ pub const HISTORY_PAGE: usize = 250;
 /// exactly one `Update` -- the UI counts in-flight jobs to show a busy state.
 #[derive(Debug, Clone)]
 pub enum Job {
-    Open { id: RepoId, path: PathBuf },
-    Close { id: RepoId },
+    Open {
+        id: RepoId,
+        path: PathBuf,
+    },
+    Close {
+        id: RepoId,
+    },
     /// Reload HEAD, branches, and working-tree status.
-    Refresh { id: RepoId },
+    Refresh {
+        id: RepoId,
+    },
     /// Load one page of commit history starting at `skip`.
-    LoadHistory { id: RepoId, skip: usize },
-    LoadDiff { id: RepoId, key: DiffKey },
+    LoadHistory {
+        id: RepoId,
+        skip: usize,
+    },
+    LoadDiff {
+        id: RepoId,
+        key: DiffKey,
+    },
     /// `path: None` means "all files".
-    Stage { id: RepoId, path: Option<String> },
-    Unstage { id: RepoId, path: Option<String> },
-    Commit { id: RepoId, message: String },
+    Stage {
+        id: RepoId,
+        path: Option<String>,
+    },
+    Unstage {
+        id: RepoId,
+        path: Option<String>,
+    },
+    Commit {
+        id: RepoId,
+        message: String,
+    },
     /// `branch` is a local name (`main`) or remote name (`origin/main`,
     /// which creates a local tracking branch first).
-    Checkout { id: RepoId, branch: String },
+    Checkout {
+        id: RepoId,
+        branch: String,
+    },
     /// Runs `git fetch --all --prune` via the CLI on its own thread.
-    Fetch { id: RepoId },
+    Fetch {
+        id: RepoId,
+    },
     /// Pushes the current branch to origin via the CLI on its own thread.
-    Push { id: RepoId },
+    Push {
+        id: RepoId,
+    },
 }
 
 /// A reply from the worker. `Result<_, String>` is Rust's standard
 /// success-or-error type (like a discriminated union of value | message).
 #[derive(Debug)]
 pub enum Update {
-    Opened { id: RepoId, result: Result<RepoMeta, String> },
-    Refreshed { id: RepoId, result: Result<RefreshData, String> },
-    History { id: RepoId, result: Result<HistoryPage, String> },
+    Opened {
+        id: RepoId,
+        result: Result<RepoMeta, String>,
+    },
+    Refreshed {
+        id: RepoId,
+        result: Result<RefreshData, String>,
+    },
+    History {
+        id: RepoId,
+        result: Result<HistoryPage, String>,
+    },
     /// Echoes the `key` so the UI can drop replies for stale selections.
-    Diff { id: RepoId, key: DiffKey, result: Result<DiffData, String> },
+    Diff {
+        id: RepoId,
+        key: DiffKey,
+        result: Result<DiffData, String>,
+    },
     /// Outcome of a mutating action; `Ok` carries a status-bar message.
-    Acted { id: RepoId, kind: ActionKind, result: Result<String, String> },
+    Acted {
+        id: RepoId,
+        kind: ActionKind,
+        result: Result<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

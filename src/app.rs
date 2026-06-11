@@ -7,9 +7,7 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use eframe::egui::{self, CentralPanel, Frame, Key, Margin, Panel, Stroke};
 
 use crate::git::worker::GitWorker;
-use crate::git::{
-    ActionKind, BranchInfo, CommitInfo, DiffKey, FileChange, Job, RepoId, Update,
-};
+use crate::git::{ActionKind, BranchInfo, CommitInfo, DiffKey, FileChange, Job, RepoId, Update};
 use crate::theme::{self, ACCENT, BG1};
 use crate::ui::{self, TopBarAction, diff::DiffView};
 
@@ -169,18 +167,31 @@ impl GitGudApp {
     }
 
     fn load_repo_list() -> Vec<PathBuf> {
-        let Some(file) = Self::repos_file() else { return Vec::new() };
+        let Some(file) = Self::repos_file() else {
+            return Vec::new();
+        };
         std::fs::read_to_string(file)
-            .map(|s| s.lines().map(PathBuf::from).filter(|p| p.is_dir()).collect())
+            .map(|s| {
+                s.lines()
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     fn save_repo_list(&self) {
-        let Some(file) = Self::repos_file() else { return };
+        let Some(file) = Self::repos_file() else {
+            return;
+        };
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let lines: String = self.tabs.iter().map(|t| format!("{}\n", t.path.display())).collect();
+        let lines: String = self
+            .tabs
+            .iter()
+            .map(|t| format!("{}\n", t.path.display()))
+            .collect();
         let _ = std::fs::write(file, lines);
     }
 
@@ -196,7 +207,9 @@ impl GitGudApp {
         self.tabs[idx].in_flight = self.tabs[idx].in_flight.saturating_sub(1);
 
         match upd {
-            Update::Opened { result: Ok(meta), .. } => {
+            Update::Opened {
+                result: Ok(meta), ..
+            } => {
                 let t = &mut self.tabs[idx];
                 t.name = meta.name;
                 t.path = meta.workdir;
@@ -288,7 +301,10 @@ impl GitGudApp {
                     // and ahead/behind counts both need recomputing.
                     if matches!(
                         kind,
-                        ActionKind::Commit | ActionKind::Checkout | ActionKind::Fetch | ActionKind::Push
+                        ActionKind::Commit
+                            | ActionKind::Checkout
+                            | ActionKind::Fetch
+                            | ActionKind::Push
                     ) {
                         self.send(Job::LoadHistory { id, skip: 0 });
                     }
@@ -358,12 +374,14 @@ impl eframe::App for GitGudApp {
                 }
             }
             if ctrl_enter && t.can_commit() {
-                jobs.push(Job::Commit { id: t.id, message: t.commit_msg.clone() });
+                jobs.push(Job::Commit {
+                    id: t.id,
+                    message: t.commit_msg.clone(),
+                });
             }
         }
 
         let action = Panel::top("topbar")
-            .exact_size(34.0)
             .frame(Frame::new().fill(BG1).inner_margin(Margin::symmetric(8, 4)))
             .show_inside(ui, |ui| ui::top_bar(ui, &self.tabs, self.active))
             .inner;
@@ -413,7 +431,12 @@ impl eframe::App for GitGudApp {
 
         // Outer HUD bezel: corner brackets framing the whole console, drawn
         // last so they sit above every panel.
-        theme::corner_brackets(ui.painter(), ui.max_rect().shrink(2.0), 16.0, Stroke::new(1.5, ACCENT));
+        theme::corner_brackets(
+            ui.painter(),
+            ui.max_rect().shrink(2.0),
+            16.0,
+            Stroke::new(1.5, ACCENT),
+        );
 
         for job in jobs {
             self.send(job);
