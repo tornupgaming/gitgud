@@ -64,7 +64,7 @@ impl RepoTab {
     }
 }
 
-pub struct GitDeckApp {
+pub struct GitGudApp {
     worker: GitWorker,
     tabs: Vec<RepoTab>,
     active: usize,
@@ -76,7 +76,7 @@ pub struct GitDeckApp {
     prev_focused: bool,
 }
 
-impl GitDeckApp {
+impl GitGudApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
         let mut app = Self {
@@ -161,7 +161,7 @@ impl GitDeckApp {
     }
 
     fn repos_file() -> Option<PathBuf> {
-        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("gitdeck").join("repos.txt"))
+        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("gitgud").join("repos.txt"))
     }
 
     fn load_repo_list() -> Vec<PathBuf> {
@@ -314,7 +314,7 @@ fn update_id(upd: &Update) -> RepoId {
     }
 }
 
-impl eframe::App for GitDeckApp {
+impl eframe::App for GitGudApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         for upd in self.worker.poll() {
             self.handle_update(upd);

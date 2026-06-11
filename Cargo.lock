@@ -1127,7 +1127,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitdeck"
+name = "gitgud"
 version = "0.1.0"
 dependencies = [
  "eframe",

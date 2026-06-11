@@ -21,7 +21,7 @@ pub enum TopBarAction {
 pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAction> {
     let mut action = None;
     ui.horizontal_centered(|ui| {
-        ui.label(RichText::new("▰ GITDECK").color(ACCENT).strong());
+        ui.label(RichText::new("▰ GITGUD").color(ACCENT).strong());
         ui.separator();
 
         for (i, tab) in tabs.iter().enumerate() {
@@ -97,7 +97,7 @@ pub fn empty_state(ui: &mut Ui) -> bool {
     let mut open = false;
     ui.add_space(ui.available_height() * 0.32);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new("▰▰ GITDECK").font(FontId::monospace(28.0)).color(ACCENT));
+        ui.label(RichText::new("▰▰ GITGUD").font(FontId::monospace(28.0)).color(ACCENT));
         ui.label(RichText::new("tactical git operations console").color(DIM));
         ui.add_space(16.0);
         open = ui.button("OPEN REPOSITORY").clicked();
