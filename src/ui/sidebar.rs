@@ -48,6 +48,81 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             });
         });
     confirm_checkout(ui, tab, jobs);
+    confirm_discard(ui, tab, jobs);
+}
+
+/// Modal for a pending discard. Destructive (untracked files are deleted, no
+/// undo), so it gets the red treatment instead of the checkout dialog's accent.
+fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let Some(target) = tab.pending_discard.clone() else {
+        return;
+    };
+    let what = match &target {
+        Some(path) => format!("Discard changes to \"{path}\"?"),
+        None => format!("Discard all {} unstaged changes?", tab.unstaged.len()),
+    };
+
+    let frame = Frame::new()
+        .fill(BG1)
+        .stroke(Stroke::new(1.0, RED))
+        .inner_margin(Margin::same(14));
+    let modal = Modal::new(Id::new("confirm_discard"))
+        .frame(frame)
+        .backdrop_color(theme::alpha(BG0, 215))
+        .show(ui.ctx(), |ui| {
+            ui.set_width(300.0);
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
+            theme::tracked_text(
+                ui.painter(),
+                pos2(r.left(), r.center().y),
+                Align2::LEFT_CENTER,
+                "CONFIRM DISCARD",
+                theme::display_font(13.0),
+                RED,
+                2.5,
+            );
+            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+            theme::fade_rule(
+                ui.painter(),
+                pos2(rule.left(), rule.center().y),
+                rule.width(),
+                RED,
+            );
+            ui.add_space(6.0);
+            ui.label(what);
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("⚠ This cannot be undone. Untracked files will be deleted.")
+                    .small()
+                    .color(RED),
+            );
+            ui.add_space(14.0);
+            let buttons = ui
+                .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let discard = ui.add(HudButton::new("DISCARD").text_color(RED)).clicked();
+                    let cancel = ui.add(HudButton::new("CANCEL")).clicked();
+                    (discard, cancel)
+                })
+                .inner;
+            theme::corner_brackets(
+                ui.painter(),
+                ui.min_rect().expand(10.0),
+                12.0,
+                Stroke::new(1.5, RED),
+            );
+            buttons
+        });
+
+    let (discard, cancel) = modal.inner;
+    if discard {
+        jobs.push(Job::Discard {
+            id: tab.id,
+            path: target,
+        });
+        tab.pending_discard = None;
+    } else if cancel || modal.should_close() {
+        tab.pending_discard = None;
+    }
 }
 
 /// Modal shown while a branch switch is pending. Returns the checkout job only
@@ -204,7 +279,8 @@ fn changes(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let staged_label = format!("STAGED · {:02}", tab.staged.len());
-            if list_header(ui, &staged_label, "UNSTAGE ALL", !tab.staged.is_empty()) {
+            let any_staged = !tab.staged.is_empty();
+            if list_header(ui, &staged_label, &[("UNSTAGE ALL", any_staged)]) == Some(0) {
                 jobs.push(Job::Unstage {
                     id: tab.id,
                     path: None,
@@ -213,27 +289,39 @@ fn changes(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             file_rows(ui, tab, true, jobs);
             ui.add_space(10.0);
             let unstaged_label = format!("UNSTAGED · {:02}", tab.unstaged.len());
-            if list_header(ui, &unstaged_label, "STAGE ALL", !tab.unstaged.is_empty()) {
-                jobs.push(Job::Stage {
+            let any_unstaged = !tab.unstaged.is_empty();
+            let actions = [("STAGE ALL", any_unstaged), ("DISCARD ALL", any_unstaged)];
+            match list_header(ui, &unstaged_label, &actions) {
+                Some(0) => jobs.push(Job::Stage {
                     id: tab.id,
                     path: None,
-                });
+                }),
+                // Arms the confirm modal; the job fires there.
+                Some(1) => tab.pending_discard = Some(None),
+                _ => {}
             }
             file_rows(ui, tab, false, jobs);
         });
 }
 
-fn list_header(ui: &mut Ui, label: &str, action: &str, enabled: bool) -> bool {
-    let mut clicked = false;
+/// Section header with right-aligned action buttons (first = rightmost).
+/// Returns the index of the clicked action, if any.
+fn list_header(ui: &mut Ui, label: &str, actions: &[(&str, bool)]) -> Option<usize> {
+    let mut clicked = None;
     ui.horizontal(|ui| {
+        let reserve = 110.0 * actions.len() as f32;
         let (rect, _) = ui.allocate_exact_size(
-            vec2((ui.available_width() - 110.0).max(40.0), 20.0),
+            vec2((ui.available_width() - reserve).max(40.0), 20.0),
             Sense::hover(),
         );
         sub_label(ui, rect, label);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let btn = HudButton::new(action).small(true);
-            clicked = ui.add_enabled(enabled, btn).clicked();
+            for (i, (action, enabled)) in actions.iter().enumerate() {
+                let btn = HudButton::new(*action).small(true);
+                if ui.add_enabled(*enabled, btn).clicked() {
+                    clicked = Some(i);
+                }
+            }
         });
     });
     clicked
@@ -248,6 +336,7 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
     // can't set `tab.selection` while still borrowing `tab.staged`.
     let mut select: Option<DiffKey> = None;
     let mut toggle: Option<String> = None;
+    let mut discard: Option<String> = None;
 
     let files = if staged { &tab.staged } else { &tab.unstaged };
     for f in files {
@@ -289,7 +378,9 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
             glyph_color,
         );
 
-        let text_w = rect.width() - 20.0 - btn_w - 12.0;
+        // Unstaged rows carry two buttons (discard + stage), staged rows one.
+        let btn_count = if staged { 1.0 } else { 2.0 };
+        let text_w = rect.width() - 20.0 - (btn_w + 4.0) * btn_count - 8.0;
         let path = truncate_left(ui, &f.path, &font, text_w);
         p.text(
             pos2(rect.left() + 20.0, y),
@@ -322,11 +413,44 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
             label_color,
         );
 
-        if btn.clicked() {
+        let mut discard_clicked = false;
+        if !staged {
+            let x_rect = Rect::from_center_size(
+                pos2(btn_rect.left() - 4.0 - btn_w / 2.0, y),
+                vec2(btn_w, btn_w),
+            );
+            let x_btn = ui.interact(x_rect, resp.id.with("discard"), Sense::click());
+            if x_btn.hovered() {
+                p.rect_filled(x_rect, CornerRadius::ZERO, BG3);
+                p.rect_stroke(
+                    x_rect,
+                    CornerRadius::ZERO,
+                    Stroke::new(1.0, RED),
+                    StrokeKind::Inside,
+                );
+            }
+            p.text(
+                x_rect.center(),
+                Align2::CENTER_CENTER,
+                "✕",
+                font.clone(),
+                RED,
+            );
+            discard_clicked = x_btn.clicked();
+        }
+
+        if discard_clicked {
+            discard = Some(f.path.clone());
+        } else if btn.clicked() {
             toggle = Some(f.path.clone());
         } else if resp.clicked() {
             select = Some(key);
         }
+    }
+
+    if let Some(path) = discard {
+        // Arms the confirm modal; the job fires there.
+        tab.pending_discard = Some(Some(path));
     }
 
     if let Some(path) = toggle {

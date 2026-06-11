@@ -117,6 +117,15 @@ fn run_job(
                 result,
             })
         }
+        Job::Discard { id, path } => {
+            let (repo, _) = repos.get(&id)?;
+            let result = ops::discard(repo, path.as_deref());
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::Discard,
+                result,
+            })
+        }
         Job::Commit { id, message } => {
             let (repo, _) = repos.get(&id)?;
             let result = ops::commit(repo, &message);

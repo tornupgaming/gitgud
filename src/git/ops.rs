@@ -462,6 +462,25 @@ pub fn unstage(repo: &Repository, path: Option<&str>) -> Result<String, String> 
     Ok(format!("unstaged {label}"))
 }
 
+/// `git restore <path>` + `git clean` rolled together: reset the working tree
+/// to the index, which discards unstaged edits, restores deleted tracked
+/// files, and (because the unstaged list shows them) deletes untracked files.
+/// Staged changes are untouched.
+pub fn discard(repo: &Repository, path: Option<&str>) -> Result<String, String> {
+    let mut co = CheckoutBuilder::new();
+    co.force().remove_untracked(true);
+    if let Some(path) = path {
+        co.path(path);
+    }
+    // `None` index = the repo's own index. Ignored files are kept:
+    // `remove_ignored` stays off.
+    repo.checkout_index(None, Some(&mut co)).map_err(g)?;
+    Ok(format!(
+        "discarded {}",
+        path.unwrap_or("all unstaged changes")
+    ))
+}
+
 pub fn commit(repo: &Repository, message: &str) -> Result<String, String> {
     let message = message.trim();
     if message.is_empty() {
@@ -572,4 +591,73 @@ fn run_git(workdir: &Path, args: &[&str], fail_msg: &str) -> Result<String, Stri
         return Err(last_line.unwrap_or(fail_msg).to_string());
     }
     Ok(stderr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn discard_restores_tracked_deletes_untracked_keeps_staged() {
+        let dir = std::env::temp_dir().join(format!("gitgud_discard_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test").unwrap();
+
+        fs::write(dir.join("a.txt"), "original").unwrap();
+        fs::write(dir.join("c.txt"), "original").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "init").unwrap();
+
+        fs::write(dir.join("a.txt"), "unstaged edit").unwrap();
+        fs::write(dir.join("b.txt"), "untracked").unwrap();
+        fs::write(dir.join("c.txt"), "staged edit").unwrap();
+        stage(&repo, Some("c.txt")).unwrap();
+
+        discard(&repo, None).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "original");
+        assert!(!dir.join("b.txt").exists(), "untracked file not deleted");
+        // The staged edit lives in the index; discard resets workdir TO the
+        // index, so the file on disk keeps the staged content.
+        assert_eq!(
+            fs::read_to_string(dir.join("c.txt")).unwrap(),
+            "staged edit"
+        );
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discard_single_file_leaves_others_alone() {
+        let dir =
+            std::env::temp_dir().join(format!("gitgud_discard_one_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test").unwrap();
+
+        fs::write(dir.join("a.txt"), "original").unwrap();
+        fs::write(dir.join("b.txt"), "original").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "init").unwrap();
+
+        fs::write(dir.join("a.txt"), "edit a").unwrap();
+        fs::write(dir.join("b.txt"), "edit b").unwrap();
+
+        discard(&repo, Some("a.txt")).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "original");
+        assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "edit b");
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

@@ -54,6 +54,12 @@ pub enum Job {
         id: RepoId,
         path: Option<String>,
     },
+    /// Throw away unstaged working-tree changes; deletes untracked files.
+    /// `path: None` means "all files". Destructive -- the UI confirms first.
+    Discard {
+        id: RepoId,
+        path: Option<String>,
+    },
     Commit {
         id: RepoId,
         message: String,
@@ -108,6 +114,7 @@ pub enum Update {
 pub enum ActionKind {
     Stage,
     Unstage,
+    Discard,
     Commit,
     Checkout,
     Fetch,
