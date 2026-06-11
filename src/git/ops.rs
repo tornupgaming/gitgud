@@ -447,8 +447,36 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
 }
 
 pub fn fetch(workdir: &Path) -> Result<String, String> {
+    let stderr = run_git(workdir, &["fetch", "--all", "--prune"], "git fetch failed")?;
+    let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
+    // git prints ref updates ("abc..def  main -> origin/main") to stderr.
+    match last_line {
+        Some(line) if stderr.contains("->") => Ok(format!("fetch complete — {}", line.trim())),
+        _ => Ok("fetch complete".to_string()),
+    }
+}
+
+pub fn push(workdir: &Path) -> Result<String, String> {
+    // No refspec: git pushes the current branch per the user's `push.default`
+    // (the default `simple` pushes HEAD to its upstream of the same name).
+    // `--set-upstream` makes the very first push of a new branch also record
+    // its tracking ref, so later pushes need no arguments either.
+    let stderr = run_git(workdir, &["push", "--set-upstream", "origin", "HEAD"], "git push failed")?;
+    let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
+    match last_line {
+        // "Everything up-to-date" already reads as a full status message.
+        Some(line) if line.trim() == "Everything up-to-date" => Ok(line.trim().to_string()),
+        Some(line) => Ok(format!("push complete — {}", line.trim())),
+        None => Ok("push complete".to_string()),
+    }
+}
+
+/// Shells out to the git CLI in `workdir` so the user's credential helpers
+/// (and ssh agent) handle network auth. Returns stderr on success; on failure
+/// returns the last non-empty stderr line, or `fail_msg` if there is none.
+fn run_git(workdir: &Path, args: &[&str], fail_msg: &str) -> Result<String, String> {
     let mut cmd = Command::new("git");
-    cmd.args(["-C"]).arg(workdir).args(["fetch", "--all", "--prune"]);
+    cmd.args(["-C"]).arg(workdir).args(args);
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW: stop a console window from flashing up.
@@ -462,14 +490,10 @@ pub fn fetch(workdir: &Path) -> Result<String, String> {
             e.to_string()
         }
     })?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     if !output.status.success() {
-        return Err(last_line.unwrap_or("git fetch failed").to_string());
+        let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
+        return Err(last_line.unwrap_or(fail_msg).to_string());
     }
-    // git prints ref updates ("abc..def  main -> origin/main") to stderr.
-    match last_line {
-        Some(line) if stderr.contains("->") => Ok(format!("fetch complete — {}", line.trim())),
-        _ => Ok("fetch complete".to_string()),
-    }
+    Ok(stderr)
 }

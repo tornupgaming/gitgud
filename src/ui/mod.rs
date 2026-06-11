@@ -16,6 +16,7 @@ pub enum TopBarAction {
     Close(usize),
     Open,
     Fetch,
+    Push,
 }
 
 pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAction> {
@@ -49,9 +50,13 @@ pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAct
         }
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let can_fetch = tabs.get(active).is_some_and(|t| t.loaded);
-            if ui.add_enabled(can_fetch, Button::new("⟳ FETCH")).clicked() {
+            // Both network actions need a loaded repo; disabled until then.
+            let ready = tabs.get(active).is_some_and(|t| t.loaded);
+            if ui.add_enabled(ready, Button::new("⟳ FETCH")).clicked() {
                 action = Some(TopBarAction::Fetch);
+            }
+            if ui.add_enabled(ready, Button::new("⤒ PUSH")).clicked() {
+                action = Some(TopBarAction::Push);
             }
             if tabs.iter().any(|t| t.in_flight > 0) {
                 ui.label(RichText::new("BUSY").small().color(DIM));

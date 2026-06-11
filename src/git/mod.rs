@@ -41,6 +41,8 @@ pub enum Job {
     Checkout { id: RepoId, branch: String },
     /// Runs `git fetch --all --prune` via the CLI on its own thread.
     Fetch { id: RepoId },
+    /// Pushes the current branch to origin via the CLI on its own thread.
+    Push { id: RepoId },
 }
 
 /// A reply from the worker. `Result<_, String>` is Rust's standard
@@ -63,6 +65,7 @@ pub enum ActionKind {
     Commit,
     Checkout,
     Fetch,
+    Push,
 }
 
 #[derive(Debug, Clone)]

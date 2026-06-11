@@ -121,5 +121,19 @@ fn run_job(
             });
             None
         }
+        Job::Push { id } => {
+            // Same off-thread treatment as fetch: a network push must not
+            // block local jobs queued behind it.
+            let (_, workdir) = repos.get(&id)?;
+            let workdir = workdir.clone();
+            let tx = upd_tx.clone();
+            let ctx = egui_ctx.clone();
+            std::thread::spawn(move || {
+                let result = ops::push(&workdir);
+                let _ = tx.send(Update::Acted { id, kind: ActionKind::Push, result });
+                ctx.request_repaint();
+            });
+            None
+        }
     }
 }

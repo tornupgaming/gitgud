@@ -284,7 +284,12 @@ impl GitGudApp {
                 };
                 if ok {
                     self.send(Job::Refresh { id });
-                    if matches!(kind, ActionKind::Commit | ActionKind::Checkout | ActionKind::Fetch) {
+                    // Push moves the remote-tracking ref, so history decorations
+                    // and ahead/behind counts both need recomputing.
+                    if matches!(
+                        kind,
+                        ActionKind::Commit | ActionKind::Checkout | ActionKind::Fetch | ActionKind::Push
+                    ) {
                         self.send(Job::LoadHistory { id, skip: 0 });
                     }
                 }
@@ -304,7 +309,8 @@ fn job_id(job: &Job) -> RepoId {
         | Job::Unstage { id, .. }
         | Job::Commit { id, .. }
         | Job::Checkout { id, .. }
-        | Job::Fetch { id } => *id,
+        | Job::Fetch { id }
+        | Job::Push { id } => *id,
     }
 }
 
@@ -368,6 +374,11 @@ impl eframe::App for GitGudApp {
             Some(TopBarAction::Fetch) => {
                 if let Some(t) = self.tabs.get(self.active) {
                     jobs.push(Job::Fetch { id: t.id });
+                }
+            }
+            Some(TopBarAction::Push) => {
+                if let Some(t) = self.tabs.get(self.active) {
+                    jobs.push(Job::Push { id: t.id });
                 }
             }
             None => {}
