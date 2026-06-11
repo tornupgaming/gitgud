@@ -2,14 +2,22 @@
 //! per-frame loop that turns worker updates and UI clicks into jobs.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, CentralPanel, Frame, Key, Margin, Panel, Stroke};
+use notify::Watcher;
 
 use crate::git::worker::GitWorker;
 use crate::git::{ActionKind, BranchInfo, CommitInfo, DiffKey, FileChange, Job, RepoId, Update};
 use crate::theme::{self, ACCENT, BG1};
 use crate::ui::{self, TopBarAction, diff::DiffView};
+
+/// Minimum gap between watcher-triggered refreshes. Bursty writers (saves,
+/// builds) collapse into one status scan per window instead of one per event.
+const AUTO_REFRESH_GAP: Duration = Duration::from_millis(800);
 
 pub struct RepoTab {
     pub id: RepoId,
@@ -38,6 +46,12 @@ pub struct RepoTab {
     pub loaded: bool,
     /// A commit job is in flight -- blocks double-commits.
     pub committing: bool,
+    /// Set by the worktree watcher thread; the frame loop turns it into a
+    /// `Refresh` once the tab is idle.
+    fs_dirty: Arc<AtomicBool>,
+    /// Keeps the watcher's backend thread alive; dropped with the tab.
+    watcher: Option<notify::RecommendedWatcher>,
+    last_auto_refresh: Instant,
 }
 
 impl RepoTab {
@@ -62,6 +76,9 @@ impl RepoTab {
             log: None,
             loaded: false,
             committing: false,
+            fs_dirty: Arc::new(AtomicBool::new(false)),
+            watcher: None,
+            last_auto_refresh: Instant::now(),
         }
     }
 
@@ -199,7 +216,31 @@ impl GitGudApp {
         let _ = std::fs::write(file, lines);
     }
 
-    fn handle_update(&mut self, upd: Update) {
+    /// Watch the worktree (including `.git`, so external commits and branch
+    /// switches count too). Events only set a flag and wake egui -- the actual
+    /// refresh decision happens on the UI thread, where the debounce state is.
+    fn spawn_watcher(tab: &mut RepoTab, ctx: &egui::Context) {
+        let dirty = tab.fs_dirty.clone();
+        let ctx = ctx.clone();
+        tab.watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            // Access events are reads; they can't change git status.
+            if let Ok(ev) = res
+                && !matches!(ev.kind, notify::EventKind::Access(_))
+            {
+                dirty.store(true, Ordering::Relaxed);
+                // Delayed wake batches an event burst into one frame.
+                ctx.request_repaint_after(Duration::from_millis(250));
+            }
+        })
+        .and_then(|mut w| {
+            w.watch(&tab.path, notify::RecursiveMode::Recursive)?;
+            Ok(w)
+        })
+        // On failure the tab silently falls back to F5/refocus refresh.
+        .ok();
+    }
+
+    fn handle_update(&mut self, ctx: &egui::Context, upd: Update) {
         let id = update_id(&upd);
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             // Tab already closed; only a failed open still needs reporting.
@@ -218,6 +259,7 @@ impl GitGudApp {
                 t.name = meta.name;
                 t.path = meta.workdir;
                 t.loaded = true;
+                Self::spawn_watcher(t, ctx);
                 self.save_repo_list();
                 self.send(Job::Refresh { id });
                 self.send(Job::LoadHistory { id, skip: 0 });
@@ -349,8 +391,9 @@ fn update_id(upd: &Update) -> RepoId {
 
 impl eframe::App for GitGudApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         for upd in self.worker.poll() {
-            self.handle_update(upd);
+            self.handle_update(&ctx, upd);
         }
         self.poll_picker();
 
@@ -377,11 +420,24 @@ impl eframe::App for GitGudApp {
         // Panels borrow the active tab mutably, so clicks are collected here
         // and sent after layout (avoids a second &mut borrow of self).
         let mut jobs: Vec<Job> = Vec::new();
-        if let Some(t) = self.tabs.get(self.active) {
+        if let Some(t) = self.tabs.get_mut(self.active) {
             if t.loaded && (f5 || regained) {
                 jobs.push(Job::Refresh { id: t.id });
                 if f5 {
                     jobs.push(Job::LoadHistory { id: t.id, skip: 0 });
+                }
+                // A manual refresh covers whatever the watcher saw.
+                t.fs_dirty.store(false, Ordering::Relaxed);
+                t.last_auto_refresh = Instant::now();
+            } else if t.loaded && t.in_flight == 0 && t.fs_dirty.load(Ordering::Relaxed) {
+                let since = t.last_auto_refresh.elapsed();
+                if since >= AUTO_REFRESH_GAP {
+                    t.fs_dirty.store(false, Ordering::Relaxed);
+                    t.last_auto_refresh = Instant::now();
+                    jobs.push(Job::Refresh { id: t.id });
+                } else {
+                    // Too soon -- schedule a wake for when the gap expires.
+                    ui.ctx().request_repaint_after(AUTO_REFRESH_GAP - since);
                 }
             }
             if ctrl_enter && t.can_commit() {
@@ -436,7 +492,7 @@ impl eframe::App for GitGudApp {
 
         if self.tabs.is_empty() {
             let open = CentralPanel::default()
-                .show_inside(ui, |ui| ui::empty_state(ui))
+                .show_inside(ui, ui::empty_state)
                 .inner;
             if open {
                 self.spawn_picker(ui.ctx());

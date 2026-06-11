@@ -259,19 +259,17 @@ pub fn status_bar(ui: &mut Ui, tab: Option<&RepoTab>, app_log: Option<&(bool, St
                 let color = if *is_err { RED } else { DIM };
                 ui.label(RichText::new(msg).color(color));
             }
-            if busy {
-                if let Some(t) = tab {
-                    theme::tracked_text(
-                        ui.painter(),
-                        ui.cursor().right_center() - vec2(8.0, 0.0),
-                        Align2::RIGHT_CENTER,
-                        &format!("QUEUE {:02}", t.in_flight),
-                        theme::display_font(11.0),
-                        ACCENT,
-                        1.5,
-                    );
-                    ui.add_space(70.0);
-                }
+            if busy && let Some(t) = tab {
+                theme::tracked_text(
+                    ui.painter(),
+                    ui.cursor().right_center() - vec2(8.0, 0.0),
+                    Align2::RIGHT_CENTER,
+                    &format!("QUEUE {:02}", t.in_flight),
+                    theme::display_font(11.0),
+                    ACCENT,
+                    1.5,
+                );
+                ui.add_space(70.0);
             }
         });
     });

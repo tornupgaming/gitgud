@@ -11,6 +11,10 @@ eframe = { version = "0.34.3", default-features = false, features = ["glow", "de
 git2 = { version = "0.21", default-features = false }
 # Native folder-picker dialog.
 rfd = "0.17"
+# Worktree watcher (ReadDirectoryChangesW) so external file changes refresh
+# the status pane without refocusing. default-features off drops the
+# macOS/serde extras.
+notify = { version = "8", default-features = false }
 # Diff syntax highlighting. Trimmed to parsing + the bundled Sublime syntax
 # dump; yaml-load lets us add the Odin grammar the defaults lack.
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-onig", "yaml-load"] }

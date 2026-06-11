@@ -497,10 +497,10 @@ pub fn commit(repo: &Repository, message: &str) -> Result<String, String> {
         Err(e) if e.code() == ErrorCode::UnbornBranch => None,
         Err(e) => return Err(g(e)),
     };
-    if let Some(parent) = &parent {
-        if parent.tree_id() == tree_id {
-            return Err("nothing staged to commit".to_string());
-        }
+    if let Some(parent) = &parent
+        && parent.tree_id() == tree_id
+    {
+        return Err("nothing staged to commit".to_string());
     }
     // `parents` must be a slice of references; Option -> 0-or-1-element Vec.
     let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
