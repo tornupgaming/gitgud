@@ -1,5 +1,6 @@
-//! Tactical-HUD theme: monospace everywhere, sharp corners, 1px borders,
-//! cyan glow on hover. All UI modules pull their colors from these consts.
+//! Tactical-HUD theme: a proportional UI font with monospace reserved for
+//! code (the diff body), sharp corners, 1px borders, cyan glow on hover.
+//! All UI modules pull their colors from these consts.
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Stroke, TextStyle};
 
@@ -26,12 +27,15 @@ pub fn alpha(color: Color32, a: u8) -> Color32 {
 pub fn apply(ctx: &egui::Context) {
     let mut style = (*ctx.global_style()).clone();
 
+    // Proportional for all chrome/labels; Monospace stays a fixed-width font
+    // and is resolved explicitly by the diff viewer, where column alignment
+    // and line-number gutters depend on every glyph having the same width.
     style.text_styles = [
-        (TextStyle::Heading, FontId::monospace(17.0)),
-        (TextStyle::Body, FontId::monospace(13.0)),
+        (TextStyle::Heading, FontId::proportional(17.0)),
+        (TextStyle::Body, FontId::proportional(14.0)),
         (TextStyle::Monospace, FontId::monospace(13.0)),
-        (TextStyle::Button, FontId::monospace(13.0)),
-        (TextStyle::Small, FontId::monospace(11.0)),
+        (TextStyle::Button, FontId::proportional(14.0)),
+        (TextStyle::Small, FontId::proportional(11.0)),
     ]
     .into();
 
