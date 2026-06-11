@@ -1,0 +1,21 @@
+[package]
+name = "gitdeck"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.34.3", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
+# libgit2 bindings. default-features off drops ssh/https network stacks --
+# we only do local reads/writes through libgit2; `fetch` shells out to the
+# git CLI so the user's existing credential helpers keep working.
+git2 = { version = "0.21", default-features = false }
+# Native folder-picker dialog.
+rfd = "0.17"
+
+# Size-optimized release build, so binary size measurements are honest.
+[profile.release]
+opt-level = "s"     # optimize for size over speed
+lto = true          # link-time optimization, strips cross-crate dead code
+codegen-units = 1   # slower compile, better optimization
+strip = true        # remove debug symbols
+panic = "abort"     # drop unwinding machinery
