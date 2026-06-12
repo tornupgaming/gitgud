@@ -2,6 +2,8 @@
 
 A git GUI for Windows with a sci-fi HUD aesthetic. Single ~4 MB executable, no install, no telemetry.
 
+![gitgud showing a syntax-highlighted diff, commit graph, and commit detail](assets/screenshot.png)
+
 Stage, commit, branch, merge, and resolve conflicts through libgit2; fetch, pull, and push shell out to your real git CLI so your existing credential helpers and SSH agent just work.
 
 ## Download
@@ -30,7 +32,11 @@ cargo run --release
 
 That's it. Rust 1.85+ (edition 2024). The release profile is size-optimized (LTO, `opt-level = "s"`, stripped, `panic = "abort"`) — binary size is a tracked feature, so avoid adding dependencies casually and keep `default-features = false` trimming intact.
 
-`cargo test` runs the unit tests; `cargo clippy` and `cargo fmt` are enforced in CI.
+`cargo test` runs the unit tests; `cargo clippy` and `cargo fmt` are enforced in CI. To catch formatting locally, enable the bundled pre-commit hook once per clone:
+
+```
+git config core.hooksPath .githooks
+```
 
 ## Architecture
 

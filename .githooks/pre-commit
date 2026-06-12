@@ -1,0 +1,7 @@
+#!/bin/sh
+# Reject unformatted code before it lands; CI enforces the same check.
+cargo fmt --check || {
+    echo "" >&2
+    echo "pre-commit: formatting check failed -- run 'cargo fmt', re-stage, and commit again." >&2
+    exit 1
+}

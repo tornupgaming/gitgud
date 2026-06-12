@@ -1,0 +1,5 @@
+# Normalize line endings; hooks must stay LF or sh chokes on the shebang.
+* text=auto
+.githooks/* text eol=lf
+*.png binary
+*.ttf binary
