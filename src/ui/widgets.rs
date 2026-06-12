@@ -7,7 +7,7 @@
 //! modal confirm). Every clickable action in the app routes through this so
 //! the look stays consistent.
 //!
-//! It implements [`egui::Widget`], so it drops into the usual call sites:
+//! It implements `egui::Widget`, so it drops into the usual call sites:
 //! `ui.add(HudButton::new("FETCH"))` or `ui.add_enabled(ready, HudButton::…)`.
 
 use eframe::egui::{

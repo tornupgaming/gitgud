@@ -96,6 +96,12 @@ impl LineHighlighter {
     /// `None` when the file's language is unknown (caller falls back to a
     /// single-colour line).
     pub fn spans(&mut self, text: &str) -> Option<Spans> {
+        // Oniguruma over a multi-megabyte line (minified JS, embedded blobs)
+        // can stall the UI thread for seconds; such lines render uncoloured.
+        const LINE_CAP: usize = 4096;
+        if text.len() > LINE_CAP {
+            return None;
+        }
         let hl = self.0.as_mut()?;
         // The default syntaxes are compiled expecting the newline the diff
         // collector trimmed off; restore it, then clamp spans back.

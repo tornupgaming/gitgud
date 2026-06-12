@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**gitgud** — a Windows git GUI client (~4k lines of Rust) built on eframe/egui with a sci-fi HUD aesthetic. Binary name `gitgud`, window title "GITGUD". Rust edition 2024.
+**gitgud** — a Windows git GUI client (~6k lines of Rust) built on eframe/egui with a sci-fi HUD aesthetic. Binary name `gitgud`, window title "GITGUD". Rust edition 2024.
 
 ## Commands
 
 - `cargo check` — fastest verification; run after edits.
 - `cargo run` — build and launch the app.
-- `cargo test` — run unit tests (they live in `#[cfg(test)]` modules in `src/git/ops.rs` and `src/ui/highlight.rs`).
+- `cargo test` — run unit tests (they live in `#[cfg(test)]` modules in `src/git/ops.rs`, `src/git/graph.rs`, `src/ui/highlight.rs`, and `src/ui/conflict.rs`).
 - `cargo test <name>` — run a single test.
 - `cargo clippy` / `cargo fmt` — lint and format.
 
@@ -32,8 +32,17 @@ Key invariants in `app.rs`:
 - Diff replies echo their `DiffKey`; the UI drops replies that no longer match the current selection. After a successful mutating action, the app re-sends `Refresh` (and `LoadHistory` for commit/checkout/fetch/push/pull).
 - Destructive actions (checkout, discard) are arm-then-confirm: `pending_checkout` / `pending_discard` hold the armed state and the job only fires on confirm.
 
-UI (`src/ui/`): immediate-mode egui. Every panel is a "module" — the chamfered HUD plate drawn by `module()` in `ui/mod.rs`. All colors, fonts (Rajdhani, bundled in `assets/fonts/`), and paint primitives (scanlines, glow, chamfer, gradient fills) come from `src/theme.rs`; never hardcode colors. `shell.rs` = top/status bars, `sidebar.rs` = branches + stage/unstage, `history.rs` = commit log (paged, 250/page), `diff.rs` = diff viewer (flattens `DiffData` into pre-highlighted rows once, then virtualizes with `show_rows`), `highlight.rs` = syntect highlighting with a custom HUD theme and a bundled Odin grammar.
+UI (`src/ui/`): immediate-mode egui. Every panel is a "module" — the chamfered HUD plate drawn by `module()` in `ui/mod.rs`. All colors, fonts (Rajdhani, bundled in `assets/fonts/`), and paint primitives (scanlines, glow, chamfer, gradient fills) come from `src/theme.rs`; never hardcode colors. `shell.rs` = top/status bars, `sidebar.rs` = branches panel, `worktree.rs` = staged/unstaged lists + commit box + commit detail, `graph.rs` = commit graph renderer (multi-lane DAG, paged 250/page; layout algorithm in `src/git/graph.rs`), `diff.rs` = diff viewer (flattens `DiffData` into pre-highlighted rows once, then virtualizes with `show_rows`), `conflict.rs` = per-block conflict resolution, `widgets.rs` = `HudButton`, `highlight.rs` = syntect highlighting with a custom HUD theme and a bundled Odin grammar.
 
 State persistence: open-repo list at `%APPDATA%\gitgud\repos.txt`. No other config.
+
+## Security invariants
+
+The threat model is "the user opened a repo they don't fully trust" — see SECURITY.md. These rules hold everywhere:
+
+- Every git CLI invocation goes through `git_cmd()` in `src/git/ops.rs`, which passes `-c protocol.ext.allow=never -c core.fsmonitor=` to block config-based command execution from a crafted `.git/config`. Never build a `Command::new("git")` elsewhere.
+- Repo-controlled strings (branch names, index paths) never reach the CLI or filesystem unchecked: branch args are rejected if they start with `-`; index paths go through `workdir_path()`, which rejects `..`/absolute components so writes stay inside the worktree.
+- Untrusted content is bounded before UI-thread work: diffs cap at `DIFF_LINE_CAP` (20k lines), lines over 4 KiB skip syntect highlighting (`LINE_CAP` in `highlight.rs`). Any new pass over repo content needs an equivalent bound.
+- Bytes from git become `String` only via `from_utf8_lossy` — never `from_utf8().unwrap()`.
 
 Keyboard shortcuts: F5 refresh, Ctrl+Enter commit, Ctrl+P push; refresh also fires on window refocus.

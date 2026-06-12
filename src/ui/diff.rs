@@ -23,12 +23,15 @@ const RATIO_CELL_W: f32 = 4.0;
 const RATIO_GAP: f32 = 2.0;
 const RATIO_BAR_W: f32 = RATIO_CELLS as f32 * (RATIO_CELL_W + RATIO_GAP) - RATIO_GAP;
 
+/// Pre-flattened, pre-highlighted render model for one diff. Built once per
+/// `Update::Diff` reply; per-frame rendering is an index walk over `rows`.
 pub struct DiffView {
     pub adds: usize,
     pub dels: usize,
     pub rows: Vec<DiffRow>,
 }
 
+/// One virtualized row of the diff body.
 pub enum DiffRow {
     File {
         path: String,
@@ -41,6 +44,8 @@ pub enum DiffRow {
 }
 
 impl DiffView {
+    /// One-time flatten of the whole diff, computing highlight spans in the
+    /// same pass so the render path never touches syntect.
     pub fn build(data: DiffData) -> Self {
         let mut rows = Vec::new();
         for f in data.files {
@@ -81,6 +86,9 @@ impl DiffView {
     }
 }
 
+/// The DIFF ANALYSIS module: header strip plus the virtualized body. ◀ GRAPH
+/// backs out one level -- an open commit file returns to the graph with the
+/// commit still selected, a workdir selection clears entirely.
 pub fn show(ui: &mut Ui, tab: &mut RepoTab) {
     let readout = match &tab.diff {
         None => "SCANNING".to_owned(),

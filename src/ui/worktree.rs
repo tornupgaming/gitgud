@@ -13,6 +13,9 @@ use crate::app::RepoTab;
 use crate::git::{ChangeKind, DiffKey, Job};
 use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, BRIGHT, DIM, GREEN, RED, TEXT};
 
+/// Picks the column's mode off the current selection, then runs the discard
+/// and abort-merge confirm modals (they render whenever their tab state is
+/// armed, regardless of mode).
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     match tab.selection.clone() {
         Some(DiffKey::Commit { id }) => commit_detail(ui, tab, &id),
@@ -183,7 +186,10 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
         .map(|c| c.short.clone())
         .unwrap_or_else(|| id[..id.len().min(7)].to_owned());
     module(ui, None, "COMMIT", &short, |ui| {
-        if ui.add(HudButton::new("◀ WORKING TREE").small(true)).clicked() {
+        if ui
+            .add(HudButton::new("◀ WORKING TREE").small(true))
+            .clicked()
+        {
             tab.selection = None;
             tab.commit_diff = None;
             tab.commit_file = None;
@@ -257,9 +263,19 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
                         font.clone(),
                         GREEN,
                     );
-                    let path =
-                        truncate_left(ui, &f.path, &font, (r.left() - 8.0 - rect.left() - 4.0).max(0.0));
-                    p.text(pos2(rect.left() + 4.0, y), Align2::LEFT_CENTER, path, font.clone(), TEXT);
+                    let path = truncate_left(
+                        ui,
+                        &f.path,
+                        &font,
+                        (r.left() - 8.0 - rect.left() - 4.0).max(0.0),
+                    );
+                    p.text(
+                        pos2(rect.left() + 4.0, y),
+                        Align2::LEFT_CENTER,
+                        path,
+                        font.clone(),
+                        TEXT,
+                    );
                     if selected {
                         theme::glow_outline(
                             &p,

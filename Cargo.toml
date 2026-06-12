@@ -2,6 +2,11 @@
 name = "gitgud"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "A git GUI for Windows with a sci-fi HUD aesthetic"
+repository = "https://github.com/tornupgaming/gitgud"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
 
 [dependencies]
 eframe = { version = "0.34.3", default-features = false, features = ["glow", "default_fonts", "accesskit"] }

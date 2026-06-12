@@ -1,5 +1,10 @@
 //! Application state: repo tabs, worker wiring, persistence, and the
 //! per-frame loop that turns worker updates and UI clicks into jobs.
+//!
+//! The UI thread never touches `git2` -- repo work is a `Job` sent to the
+//! worker and an `Update` handled when it comes back. Clicks made during
+//! panel layout can't send directly (the active tab is borrowed mutably),
+//! so they collect into a frame-local `Vec<Job>` flushed after layout.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +27,9 @@ use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
 /// builds) collapse into one status scan per window instead of one per event.
 const AUTO_REFRESH_GAP: Duration = Duration::from_millis(800);
 
+/// UI-side state for one open repository: the worker's latest snapshots plus
+/// view state (selection, armed confirmations, in-flight accounting). The
+/// worker owns the matching `Repository`; this holds only plain data.
 pub struct RepoTab {
     pub id: RepoId,
     pub name: String,
@@ -34,8 +42,13 @@ pub struct RepoTab {
     pub commits: Vec<CommitInfo>,
     /// Lane layout for `commits`; recomputed whenever `commits` changes.
     pub graph: Graph,
+    /// The last history page has been reached -- hides LOAD MORE.
     pub history_done: bool,
+    /// What the center panel is bound to. Diff/conflict replies echo their
+    /// key and are dropped unless it still matches this.
     pub selection: Option<DiffKey>,
+    /// Flattened rows for the center diff view; `None` while a reply is in
+    /// flight.
     pub diff: Option<DiffView>,
     /// Raw diff of the selected commit: feeds the right-panel file list and
     /// per-file diff views. Set when a `DiffKey::Commit` reply arrives.
@@ -63,6 +76,7 @@ pub struct RepoTab {
     pub in_flight: usize,
     /// Last action outcome for the status bar: (is_error, message).
     pub log: Option<(bool, String)>,
+    /// `Open` succeeded; gates refreshes and network actions.
     pub loaded: bool,
     /// A commit job is in flight -- blocks double-commits.
     pub committing: bool,
@@ -108,6 +122,7 @@ impl RepoTab {
         }
     }
 
+    /// Gate for the COMMIT button and Ctrl+Enter.
     pub fn can_commit(&self) -> bool {
         // Mid-merge an empty stage is fine: a merge resolved entirely to
         // HEAD's content stages nothing, yet the merge commit must happen.
@@ -124,6 +139,9 @@ impl RepoTab {
     }
 }
 
+/// Top-level state: the worker handle plus all open tabs. Every job must go
+/// through `send` -- not `worker.send()` -- so the per-tab `in_flight`
+/// counter (and with it every busy indicator) stays honest.
 pub struct GitGudApp {
     worker: GitWorker,
     tabs: Vec<RepoTab>,
@@ -390,10 +408,8 @@ impl GitGudApp {
                                 // (e.g. a re-sent diff): rebuild it from the
                                 // fresh data, or drop it if the file is gone.
                                 if let Some(path) = t.commit_file.clone() {
-                                    t.diff = DiffView::build_one(
-                                        t.commit_diff.as_ref().unwrap(),
-                                        &path,
-                                    );
+                                    t.diff =
+                                        DiffView::build_one(t.commit_diff.as_ref().unwrap(), &path);
                                     if t.diff.is_none() {
                                         t.commit_file = None;
                                     }
@@ -492,6 +508,8 @@ fn update_id(upd: &Update) -> RepoId {
 }
 
 impl eframe::App for GitGudApp {
+    /// One frame: drain worker updates, translate input and panel clicks
+    /// into jobs, lay out the HUD, send the collected jobs after layout.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         for upd in self.worker.poll() {

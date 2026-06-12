@@ -1,3 +1,7 @@
+//! Process entry: window options, then hand off to eframe. Everything
+//! interesting lives in [`app`] (the UI thread) and [`git`] (the worker
+//! thread and the message contract between them).
+
 // Hide the console window in release builds (Windows-only attribute).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

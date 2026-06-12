@@ -26,10 +26,13 @@ pub const HISTORY_PAGE: usize = 250;
 /// exactly one `Update` -- the UI counts in-flight jobs to show a busy state.
 #[derive(Debug, Clone)]
 pub enum Job {
+    /// Open the repo at (or above -- discovery walks up) `path` and register
+    /// it under `id`.
     Open {
         id: RepoId,
         path: PathBuf,
     },
+    /// Drop the repo handle. The one job with no `Update` reply.
     Close {
         id: RepoId,
     },
@@ -42,6 +45,7 @@ pub enum Job {
         id: RepoId,
         skip: usize,
     },
+    /// Compute the diff identified by `key`; the reply echoes the key.
     LoadDiff {
         id: RepoId,
         key: DiffKey,
@@ -61,6 +65,8 @@ pub enum Job {
         id: RepoId,
         path: Option<String>,
     },
+    /// Commit the index. Inside a merge this records MERGE_HEAD as the
+    /// second parent and clears the merge state.
     Commit {
         id: RepoId,
         message: String,
@@ -111,6 +117,8 @@ pub enum Job {
 
 /// A reply from the worker. `Result<_, String>` is Rust's standard
 /// success-or-error type (like a discriminated union of value | message).
+/// Every reply carries the `id` of the tab it answers; the UI routes on it
+/// and ignores ids for tabs that have since closed.
 #[derive(Debug)]
 pub enum Update {
     Opened {
@@ -155,6 +163,9 @@ pub enum Resolution {
     Content(String),
 }
 
+/// Which job an `Acted` reply answers. The UI keys follow-up behaviour on
+/// this -- every kind triggers a `Refresh`, and history-changing kinds
+/// (commit, checkout, fetch, push, pull) also re-send `LoadHistory`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Stage,
@@ -177,11 +188,14 @@ pub struct RepoMeta {
     pub workdir: PathBuf,
 }
 
+/// Everything the sidebar shows. Each refresh replaces the previous
+/// snapshot wholesale -- no incremental diffing of state.
 #[derive(Debug)]
 pub struct RefreshData {
     /// Current branch name, or short commit id when detached.
     pub head: String,
     pub head_detached: bool,
+    /// Locals first, then remotes, each group sorted by name.
     pub branches: Vec<BranchInfo>,
     /// Changes already in the index (will be part of the next commit).
     pub staged: Vec<FileChange>,
@@ -320,6 +334,9 @@ pub enum ConflictSegment {
     },
 }
 
+/// A whole diff, pre-flattened for the UI. `adds`/`dels` are totals across
+/// all files. Line output is capped (see `ops`) so a pathological diff
+/// cannot stall the render -- a truncated diff ends with a marker line.
 #[derive(Debug, Clone)]
 pub struct DiffData {
     pub files: Vec<FileDiff>,
@@ -327,6 +344,8 @@ pub struct DiffData {
     pub dels: usize,
 }
 
+/// One file's slice of a diff; `adds`/`dels` count this file only.
+/// Binary files have `binary` set and no lines.
 #[derive(Debug, Clone)]
 pub struct FileDiff {
     pub path: String,

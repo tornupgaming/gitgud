@@ -38,6 +38,9 @@ enum Action {
     LoadMore,
 }
 
+/// The COMMIT GRAPH module: optional WIP row, virtualized commit rows, and
+/// the LOAD MORE trigger. Row clicks are recorded as an `Action` and applied
+/// after the scroll area ends, because the rows borrow `tab`.
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     let body_h = ui.text_style_height(&TextStyle::Body);
     let small_h = ui.text_style_height(&TextStyle::Small);
@@ -136,12 +139,7 @@ fn draw_edges(p: &Painter, left: f32, y_top: f32, g: &Geom, edges: &[Edge], stub
             // GitKraken-style S-curve between lanes.
             let ym = (y_top + y_bot) / 2.0;
             p.add(CubicBezierShape::from_points_stroke(
-                [
-                    pos2(x0, y_top),
-                    pos2(x0, ym),
-                    pos2(x1, ym),
-                    pos2(x1, y_bot),
-                ],
+                [pos2(x0, y_top), pos2(x0, ym), pos2(x1, ym), pos2(x1, y_bot)],
                 false,
                 Color32::TRANSPARENT,
                 stroke,
@@ -319,13 +317,23 @@ fn wip_row(ui: &mut Ui, tab: &RepoTab, g: &Geom, action: &mut Option<Action>) {
         3.0,
     ));
     // Hollow ring with a void-filled center reads as "pending".
-    p.circle_stroke(pos2(x, y1), 4.0, Stroke::new(1.5, theme::alpha(ACCENT, 200)));
+    p.circle_stroke(
+        pos2(x, y1),
+        4.0,
+        Stroke::new(1.5, theme::alpha(ACCENT, 200)),
+    );
     p.circle_filled(pos2(x, y1), 2.0, BG0);
 
     let body_font = TextStyle::Body.resolve(ui.style());
     let small_font = TextStyle::Small.resolve(ui.style());
     let text_x = rect.left() + g.graph_w + 6.0;
-    let wip_rect = p.text(pos2(text_x, y1), Align2::LEFT_CENTER, "// WIP", body_font, ACCENT);
+    let wip_rect = p.text(
+        pos2(text_x, y1),
+        Align2::LEFT_CENTER,
+        "// WIP",
+        body_font,
+        ACCENT,
+    );
 
     let label = format!("{} CHANGES", tab.staged.len() + tab.unstaged.len());
     let w = text_width(ui, &label, &small_font) + 8.0;

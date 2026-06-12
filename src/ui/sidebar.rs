@@ -10,6 +10,8 @@ use crate::app::RepoTab;
 use crate::git::Job;
 use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, GREEN, PURPLE, RED, TEXT};
 
+/// The BRANCHES module plus its confirm modal. No branch click checks out
+/// directly -- everything routes through the arm-then-confirm flow below.
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     let readout = format!("{:02}", tab.branches.len());
     let clicked = module(ui, None, "BRANCHES", &readout, |ui| {

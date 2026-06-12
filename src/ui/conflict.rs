@@ -156,6 +156,10 @@ impl ConflictView {
     }
 }
 
+/// The CONFLICT RESOLUTION module. Text conflicts get per-block toggles and
+/// MARK RESOLVED (enabled only once every block has a choice) assembles the
+/// picked content; binary and delete-vs-modify conflicts get the two
+/// whole-file resolutions instead.
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     let readout = match &tab.conflict {
         None => "SCANNING".to_owned(),
@@ -184,7 +188,15 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                 choices,
                 rows,
             } => {
-                header(ui, &view.path, busy, rows, choices, *trailing_newline, &mut act);
+                header(
+                    ui,
+                    &view.path,
+                    busy,
+                    rows,
+                    choices,
+                    *trailing_newline,
+                    &mut act,
+                );
                 ui.add_space(4.0);
                 body(ui, rows, choices, ours_label, theirs_label);
             }
@@ -367,7 +379,10 @@ fn body(ui: &mut Ui, rows: &[Row], choices: &mut [Choice], ours_label: &str, the
                         let (bg_a, bar_a) = if kept { (26, 255) } else { (10, 90) };
                         p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(col, bg_a));
                         p.rect_filled(
-                            Rect::from_min_max(rect.left_top(), pos2(rect.left() + 2.0, rect.bottom())),
+                            Rect::from_min_max(
+                                rect.left_top(),
+                                pos2(rect.left() + 2.0, rect.bottom()),
+                            ),
                             CornerRadius::ZERO,
                             theme::alpha(col, bar_a),
                         );
@@ -450,7 +465,13 @@ fn block_header(
         small.clone(),
         GREEN,
     );
-    let r = lp.text(pos2(r.right() + 6.0, y), Align2::LEFT_CENTER, "vs", small.clone(), DIM);
+    let r = lp.text(
+        pos2(r.right() + 6.0, y),
+        Align2::LEFT_CENTER,
+        "vs",
+        small.clone(),
+        DIM,
+    );
     lp.text(
         pos2(r.right() + 6.0, y),
         Align2::LEFT_CENTER,
@@ -486,7 +507,13 @@ fn block_header(
         } else {
             DIM
         };
-        p.text(chip.center(), Align2::CENTER_CENTER, label, small.clone(), text_color);
+        p.text(
+            chip.center(),
+            Align2::CENTER_CENTER,
+            label,
+            small.clone(),
+            text_color,
+        );
         if resp.clicked() {
             // Clicking the active choice disarms the block back to Unresolved.
             choices[block] = if active { Choice::Unresolved } else { choice };
@@ -571,50 +598,6 @@ fn assemble(rows: &[Row], choices: &[Choice], trailing_newline: bool) -> String 
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn view() -> ConflictView {
-        ConflictView::build(
-            "a.txt".into(),
-            ConflictFile::Text {
-                ours_label: "HEAD".into(),
-                theirs_label: "feature".into(),
-                segments: vec![
-                    ConflictSegment::Context(vec!["fn main() {".into()]),
-                    ConflictSegment::Conflict {
-                        ours: vec!["    a();".into()],
-                        theirs: vec!["    b();".into(), "    c();".into()],
-                    },
-                    ConflictSegment::Context(vec!["}".into()]),
-                ],
-                trailing_newline: true,
-            },
-        )
-    }
-
-    #[test]
-    fn assembles_choice_and_skips_base() {
-        let ViewKind::Text { rows, .. } = &view().kind else {
-            panic!("expected text kind");
-        };
-        assert_eq!(
-            assemble(rows, &[Choice::Ours], true),
-            "fn main() {\n    a();\n}\n"
-        );
-        assert_eq!(
-            assemble(rows, &[Choice::Theirs], false),
-            "fn main() {\n    b();\n    c();\n}"
-        );
-        // Both = ours then theirs, in flattening order.
-        assert_eq!(
-            assemble(rows, &[Choice::Both], true),
-            "fn main() {\n    a();\n    b();\n    c();\n}\n"
-        );
-    }
-}
-
 /// Binary and delete-vs-modify conflicts: no blocks to pick through, so a
 /// centered standby readout with the two whole-file resolutions.
 fn whole_file(
@@ -659,10 +642,57 @@ fn whole_file(
         }
         ui.add_space(8.0);
         if ui
-            .add_enabled(!busy, HudButton::new(theirs_label).min_size(vec2(240.0, 0.0)))
+            .add_enabled(
+                !busy,
+                HudButton::new(theirs_label).min_size(vec2(240.0, 0.0)),
+            )
             .clicked()
         {
             *act = Some(Act::Resolve(Resolution::Theirs));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view() -> ConflictView {
+        ConflictView::build(
+            "a.txt".into(),
+            ConflictFile::Text {
+                ours_label: "HEAD".into(),
+                theirs_label: "feature".into(),
+                segments: vec![
+                    ConflictSegment::Context(vec!["fn main() {".into()]),
+                    ConflictSegment::Conflict {
+                        ours: vec!["    a();".into()],
+                        theirs: vec!["    b();".into(), "    c();".into()],
+                    },
+                    ConflictSegment::Context(vec!["}".into()]),
+                ],
+                trailing_newline: true,
+            },
+        )
+    }
+
+    #[test]
+    fn assembles_choice_and_skips_base() {
+        let ViewKind::Text { rows, .. } = &view().kind else {
+            panic!("expected text kind");
+        };
+        assert_eq!(
+            assemble(rows, &[Choice::Ours], true),
+            "fn main() {\n    a();\n}\n"
+        );
+        assert_eq!(
+            assemble(rows, &[Choice::Theirs], false),
+            "fn main() {\n    b();\n    c();\n}"
+        );
+        // Both = ours then theirs, in flattening order.
+        assert_eq!(
+            assemble(rows, &[Choice::Both], true),
+            "fn main() {\n    a();\n    b();\n    c();\n}\n"
+        );
+    }
 }

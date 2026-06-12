@@ -13,6 +13,8 @@ use git2::Repository;
 
 use super::{ActionKind, Job, RepoId, Update, ops};
 
+/// The UI-side handle to the worker: a job sender and an update receiver.
+/// Dropping it closes the job channel, which is the worker's shutdown signal.
 pub struct GitWorker {
     jobs: Sender<Job>,
     updates: Receiver<Update>,
@@ -47,6 +49,11 @@ impl GitWorker {
         }
     }
 
+    /// Queues a job; fire-and-forget, the reply arrives via [`poll`]. App
+    /// code goes through `GitGudApp::send` instead, which wraps this to
+    /// count in-flight jobs for the busy indicator.
+    ///
+    /// [`poll`]: GitWorker::poll
     pub fn send(&self, job: Job) {
         // Ignoring the error is fine: it only fails if the worker died,
         // and then there is nobody left to report to.
@@ -59,6 +66,9 @@ impl GitWorker {
     }
 }
 
+/// Executes one job. `None` means no reply from here: `Close` never replies,
+/// network jobs (fetch/push/pull) reply later from their own thread via
+/// `upd_tx`, and a job for an unknown id (tab already closed) is dropped.
 fn run_job(
     job: Job,
     repos: &mut HashMap<RepoId, (Repository, PathBuf)>,

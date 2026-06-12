@@ -1,5 +1,10 @@
 //! All actual libgit2 work: pure functions from a `Repository` to the plain
 //! data types in `mod.rs`. Called only from the worker thread.
+//!
+//! Conventions: every error becomes a `String` (libgit2 errors via [`g`]) so
+//! results cross the channel as owned data. Mutating ops return their
+//! status-bar message as `Ok(String)`. Ops taking a `&Path` workdir instead
+//! of a `&Repository` shell out to the git CLI -- see [`run_git`] for why.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -13,9 +18,8 @@ use git2::{
 };
 
 use super::{
-    BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey,
-    DiffLine, FileChange, FileDiff, HistoryPage, LineKind, MergeInfo, RefreshData, RepoMeta,
-    Resolution,
+    BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey, DiffLine,
+    FileChange, FileDiff, HistoryPage, LineKind, MergeInfo, RefreshData, RepoMeta, Resolution,
 };
 
 /// Stop collecting diff lines past this point so a pathological diff
@@ -28,6 +32,8 @@ fn g(e: git2::Error) -> String {
     e.message().to_string()
 }
 
+/// Opens the repo enclosing `path`. Bare repos are rejected -- everything
+/// downstream assumes a working tree.
 pub fn open(path: &Path) -> Result<(Repository, RepoMeta), String> {
     // `discover` walks up from `path` to find the enclosing repo, so the
     // user can pick any subfolder of a worktree.
@@ -43,6 +49,9 @@ pub fn open(path: &Path) -> Result<(Repository, RepoMeta), String> {
     Ok((repo, RepoMeta { name, workdir }))
 }
 
+/// Builds the full sidebar snapshot in one pass: HEAD, branches, staged and
+/// unstaged lists, merge state. Cheap enough that the app re-runs it after
+/// every mutating action rather than tracking state incrementally.
 pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
     let (head, head_detached) = head_label(repo)?;
 
@@ -200,6 +209,9 @@ fn short_id(oid: Oid) -> String {
     oid.to_string()[..7].to_string()
 }
 
+/// One page of up to `limit` commits from HEAD, newest first, skipping the
+/// first `skip`. An unborn HEAD (no commits yet) is an empty ended page,
+/// not an error.
 pub fn history(repo: &Repository, skip: usize, limit: usize) -> Result<HistoryPage, String> {
     match repo.head() {
         Err(e) if e.code() == ErrorCode::UnbornBranch => {
@@ -276,6 +288,9 @@ struct DiffState {
     truncated: bool,
 }
 
+/// Builds the diff for any `DiffKey` except `Conflict`. Output stops at
+/// [`DIFF_LINE_CAP`]; a truncated diff is still `Ok`, with a marker line
+/// appended so the UI can say so.
 pub fn diff(repo: &Repository, key: &DiffKey) -> Result<DiffData, String> {
     let diff = match key {
         DiffKey::Workdir {
@@ -442,6 +457,8 @@ fn truncate(s: &mut DiffState) -> bool {
     false
 }
 
+/// Stages one path, or everything when `path` is `None`. Handles deletions
+/// too: a path missing from disk is recorded as removed.
 pub fn stage(repo: &Repository, path: Option<&str>) -> Result<String, String> {
     let mut index = repo.index().map_err(g)?;
     let label = match path {
@@ -474,6 +491,8 @@ pub fn stage(repo: &Repository, path: Option<&str>) -> Result<String, String> {
     Ok(format!("staged {label}"))
 }
 
+/// `git restore --staged` equivalent for one path or (`None`) everything.
+/// Works on an unborn HEAD, where there is no commit to reset to.
 pub fn unstage(repo: &Repository, path: Option<&str>) -> Result<String, String> {
     let label = path.unwrap_or("all changes").to_string();
     let pathspec = path.unwrap_or("*");
@@ -513,6 +532,9 @@ pub fn discard(repo: &Repository, path: Option<&str>) -> Result<String, String> 
     ))
 }
 
+/// Commits the index. Inside a merge (MERGE_HEAD exists) the result is a
+/// merge commit with MERGE_HEAD as second parent and the merge state is
+/// cleared; outside one, an index identical to HEAD is refused.
 pub fn commit(repo: &Repository, message: &str) -> Result<String, String> {
     let message = message.trim();
     if message.is_empty() {
@@ -556,6 +578,9 @@ pub fn commit(repo: &Repository, message: &str) -> Result<String, String> {
     Ok(format!("committed {}", short_id(oid)))
 }
 
+/// Switches HEAD to `branch`, first creating a local tracking branch when
+/// given a remote name. Refuses (with libgit2's message) rather than
+/// overwrite local modifications.
 pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
     // "origin/feature" -> create/find local "feature" tracking it.
     let local = match repo.find_branch(branch, BranchType::Remote) {
@@ -583,7 +608,16 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
     Ok(format!("switched to {local}"))
 }
 
+/// `git merge <branch>` via the CLI so the user's merge config, strategy,
+/// and hooks all apply. A conflicted merge returns `Ok` -- the repo is now
+/// legitimately in the merge state; only a merge that never started is `Err`.
 pub fn merge(workdir: &Path, branch: &str) -> Result<String, String> {
+    // Branch names reaching here come from libgit2's ref enumeration, which
+    // forbids a leading '-'. Re-check so this value can never be parsed as a
+    // git flag if a future caller is less careful.
+    if branch.starts_with('-') {
+        return Err(format!("invalid branch name: {branch}"));
+    }
     let output = git_output(workdir, &["merge", branch])?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -629,6 +663,9 @@ pub fn abort_merge(workdir: &Path) -> Result<String, String> {
     Ok("merge aborted".to_string())
 }
 
+/// Classifies one conflicted file for the resolution UI: deleted on either
+/// side, binary (git's early-NUL heuristic), or text parsed into marker
+/// segments.
 pub fn load_conflict(repo: &Repository, path: &str) -> Result<ConflictFile, String> {
     let conflict = find_conflict(&repo.index().map_err(g)?, path)?;
     if conflict.our.is_none() {
@@ -746,6 +783,9 @@ fn marker_label<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
     line.strip_prefix(marker)?.strip_prefix(' ').map(str::trim)
 }
 
+/// Applies a `Resolution` to the working tree and stages the result, which
+/// clears the path's conflict stages from the index. Choosing a deleted
+/// side deletes the file.
 pub fn resolve(repo: &Repository, path: &str, resolution: &Resolution) -> Result<String, String> {
     let mut index = repo.index().map_err(g)?;
     let rel = Path::new(path);
@@ -800,14 +840,26 @@ fn find_conflict(index: &git2::Index, path: &str) -> Result<git2::IndexConflict,
 }
 
 /// Repo-relative `/`-separated path -> absolute workdir path (`join` accepts
-/// forward slashes on Windows).
+/// forward slashes on Windows). Paths come from the repo's own index, which a
+/// crafted repo controls: reject `..`/absolute components, because `join`
+/// would otherwise escape the worktree (an absolute right operand *replaces*
+/// the base) and `resolve()` writes/deletes at the result.
 fn workdir_path(repo: &Repository, path: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::Component;
+    let confined = Path::new(path)
+        .components()
+        .all(|c| matches!(c, Component::Normal(_)));
+    if !confined {
+        return Err(format!("refusing path outside the worktree: {path}"));
+    }
     Ok(repo
         .workdir()
         .ok_or("bare repositories are not supported")?
         .join(path))
 }
 
+/// `git fetch --all --prune` via the CLI. Network op -- the worker runs it
+/// on a throwaway thread so it never blocks local jobs.
 pub fn fetch(workdir: &Path) -> Result<String, String> {
     let (_, stderr) = run_git(workdir, &["fetch", "--all", "--prune"], "git fetch failed")?;
     let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
@@ -818,6 +870,8 @@ pub fn fetch(workdir: &Path) -> Result<String, String> {
     }
 }
 
+/// Pushes the current branch to origin via the CLI. Network op, same
+/// throwaway-thread treatment as [`fetch`].
 pub fn push(workdir: &Path) -> Result<String, String> {
     // No refspec: git pushes the current branch per the user's `push.default`
     // (the default `simple` pushes HEAD to its upstream of the same name).
@@ -837,6 +891,8 @@ pub fn push(workdir: &Path) -> Result<String, String> {
     }
 }
 
+/// Fast-forward-only pull via the CLI; a diverged branch fails with git's
+/// own error. Network op, same throwaway-thread treatment as [`fetch`].
 pub fn pull(workdir: &Path) -> Result<String, String> {
     // --ff-only: a GUI must not silently create merge commits. A diverged
     // branch surfaces git's own "Not possible to fast-forward" error instead.
@@ -850,19 +906,31 @@ pub fn pull(workdir: &Path) -> Result<String, String> {
     }
 }
 
-/// Like `run_git` but hands back the raw `Output` even on nonzero exit:
-/// `merge` must inspect the stdout/stderr of *failed* runs to tell a
-/// conflicted merge (job succeeded, repo is merging) from a genuine error.
-fn git_output(workdir: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+/// Base git CLI invocation. The `-c` overrides neutralize repo-local config
+/// that would otherwise let a crafted repository run arbitrary commands the
+/// moment a network or merge op executes inside it: an `ext::` remote URL
+/// spawns the named program on fetch, and a command-valued `core.fsmonitor`
+/// runs on any index refresh. Hooks still run -- same trust model as using
+/// the git CLI in that repo yourself.
+fn git_cmd(workdir: &Path) -> Command {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(workdir).args(args);
+    cmd.arg("-C")
+        .arg(workdir)
+        .args(["-c", "protocol.ext.allow=never", "-c", "core.fsmonitor="]);
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW: stop a console window from flashing up.
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    cmd.output().map_err(|e| {
+    cmd
+}
+
+/// Like `run_git` but hands back the raw `Output` even on nonzero exit:
+/// `merge` must inspect the stdout/stderr of *failed* runs to tell a
+/// conflicted merge (job succeeded, repo is merging) from a genuine error.
+fn git_output(workdir: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    git_cmd(workdir).args(args).output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             "git CLI not found on PATH".to_string()
         } else {
@@ -875,15 +943,7 @@ fn git_output(workdir: &Path, args: &[&str]) -> Result<std::process::Output, Str
 /// (and ssh agent) handle network auth. Returns (stdout, stderr) on success;
 /// on failure returns the last non-empty stderr line, or `fail_msg`.
 fn run_git(workdir: &Path, args: &[&str], fail_msg: &str) -> Result<(String, String), String> {
-    let mut cmd = Command::new("git");
-    cmd.args(["-C"]).arg(workdir).args(args);
-    #[cfg(windows)]
-    {
-        // CREATE_NO_WINDOW: stop a console window from flashing up.
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
-    let output = cmd.output().map_err(|e| {
+    let output = git_cmd(workdir).args(args).output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             "git CLI not found on PATH".to_string()
         } else {
@@ -966,6 +1026,23 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn workdir_path_rejects_escapes() {
+        let dir = std::env::temp_dir().join(format!("gitgud_wdpath_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+
+        assert!(workdir_path(&repo, "sub/file.txt").is_ok());
+        assert!(workdir_path(&repo, "../evil.txt").is_err());
+        assert!(workdir_path(&repo, "a/../../evil.txt").is_err());
+        assert!(workdir_path(&repo, "C:/evil.txt").is_err());
+        assert!(workdir_path(&repo, "/evil.txt").is_err());
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     // ---- conflict marker parser ----
 
     fn block(seg: &ConflictSegment) -> (&[String], &[String]) {
@@ -1011,8 +1088,7 @@ mod tests {
 
     #[test]
     fn parse_diff3_base_section() {
-        let text =
-            "<<<<<<< HEAD\nour\n||||||| merged common ancestors\nold\n=======\ntheir\n>>>>>>> dev\n";
+        let text = "<<<<<<< HEAD\nour\n||||||| merged common ancestors\nold\n=======\ntheir\n>>>>>>> dev\n";
         let (segs, _, _) = parse_conflict(text);
         assert_eq!(segs.len(), 1);
         let (ours, theirs) = block(&segs[0]);
@@ -1153,7 +1229,12 @@ mod tests {
         )
         .unwrap();
         let data = refresh(&repo).unwrap();
-        assert!(!data.unstaged.iter().any(|f| f.kind == ChangeKind::Conflicted));
+        assert!(
+            !data
+                .unstaged
+                .iter()
+                .any(|f| f.kind == ChangeKind::Conflicted)
+        );
         assert!(
             data.staged
                 .iter()

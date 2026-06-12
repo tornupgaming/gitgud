@@ -1,6 +1,7 @@
 //! Sci-fi HUD theme: Rajdhani display font, chamfered glowing plates over a
 //! gridded void, CRT scanlines. All UI modules pull their colors and shape
-//! primitives from here.
+//! primitives from here -- new colors join the palette below, never inline
+//! at a call site.
 
 use std::sync::Arc;
 
@@ -11,20 +12,33 @@ use eframe::egui::{
     pos2, vec2,
 };
 
+/// Deepest layer -- the void behind the floating modules.
 pub const BG0: Color32 = Color32::from_rgb(0x04, 0x07, 0x0d);
+/// Plate/panel base fill.
 pub const BG1: Color32 = Color32::from_rgb(0x0a, 0x10, 0x1b);
+/// Raised elements: widget fills, title bands, section strips.
 pub const BG2: Color32 = Color32::from_rgb(0x10, 0x18, 0x28);
+/// Hover fill.
 pub const BG3: Color32 = Color32::from_rgb(0x1a, 0x26, 0x3a);
+/// Resting border; hover swaps it for [`ACCENT`].
 pub const BORDER: Color32 = Color32::from_rgb(0x1e, 0x32, 0x52);
 
+/// Body text.
 pub const TEXT: Color32 = Color32::from_rgb(0xbf, 0xd2, 0xe8);
+/// Emphasis: titles, selected rows, the lit button label.
 pub const BRIGHT: Color32 = Color32::from_rgb(0xe6, 0xf4, 0xff);
+/// Secondary: metadata, hints, disabled states.
 pub const DIM: Color32 = Color32::from_rgb(0x52, 0x6a, 0x8c);
 
+/// The signature HUD cyan: borders, glows, selection, primary actions.
 pub const ACCENT: Color32 = Color32::from_rgb(0x35, 0xe0, 0xff);
+/// Caution and "current": HEAD branch, busy indicators, merge state.
 pub const AMBER: Color32 = Color32::from_rgb(0xff, 0xb4, 0x54);
+/// Additions, ahead counts, settled status.
 pub const GREEN: Color32 = Color32::from_rgb(0x5a, 0xf7, 0x8e);
+/// Deletions, errors, conflicts, destructive confirms.
 pub const RED: Color32 = Color32::from_rgb(0xff, 0x5c, 0x57);
+/// Remote refs and the "theirs" side of conflicts.
 pub const PURPLE: Color32 = Color32::from_rgb(0xb5, 0x8c, 0xff);
 
 /// Node colors for the commit graph -- picked per commit by hashing its id so
@@ -49,6 +63,7 @@ pub fn alpha(color: Color32, a: u8) -> Color32 {
 /// Medium.
 const DISPLAY_FAMILY: &str = "display";
 
+/// Rajdhani SemiBold at `size` -- headings and tracked HUD labels.
 pub fn display_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(DISPLAY_FAMILY.into()))
 }
@@ -258,6 +273,8 @@ pub fn scanlines(painter: &Painter, rect: Rect) {
     }
 }
 
+/// Install the fonts and the global egui style. Called once at startup;
+/// every stock widget inherits the HUD look from this.
 pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx);
     let mut style = (*ctx.global_style()).clone();

@@ -9,6 +9,8 @@ use super::{HudButton, text_width};
 use crate::app::RepoTab;
 use crate::theme::{self, ACCENT, AMBER, BG1, BG2, BORDER, BRIGHT, DIM, GREEN, RED};
 
+/// Click outcome from [`top_bar`], applied by the app after layout -- the
+/// bar only borrows the tabs, so it can't act on them itself.
 pub enum TopBarAction {
     Select(usize),
     Close(usize),
@@ -18,6 +20,8 @@ pub enum TopBarAction {
     Pull,
 }
 
+/// Command deck: logo, repo tab plates, OPEN, and the network actions
+/// (disabled until the active repo is loaded).
 pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAction> {
     let mut action = None;
     ui.horizontal_centered(|ui| {
@@ -194,6 +198,8 @@ fn tab_plate(ui: &mut Ui, tab: &RepoTab, is_active: bool) -> Option<TabClick> {
     }
 }
 
+/// Readout rail: LINK status, HEAD + path, the last action's log line, queue
+/// depth, and an animated scanline while jobs are in flight.
 pub fn status_bar(ui: &mut Ui, tab: Option<&RepoTab>, app_log: Option<&(bool, String)>) {
     let bar = ui.max_rect();
     // Accent hairline along the rail's top edge (the busy scanline rides it).
