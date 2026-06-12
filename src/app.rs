@@ -11,9 +11,12 @@ use eframe::egui::{self, CentralPanel, Frame, Key, Margin, Panel, Stroke};
 use notify::Watcher;
 
 use crate::git::worker::GitWorker;
-use crate::git::{ActionKind, BranchInfo, CommitInfo, DiffKey, FileChange, Job, RepoId, Update};
+use crate::git::{
+    ActionKind, BranchInfo, ChangeKind, CommitInfo, DiffData, DiffKey, FileChange, Job, MergeInfo,
+    RepoId, Update, graph::Graph,
+};
 use crate::theme::{self, ACCENT, BG1};
-use crate::ui::{self, TopBarAction, diff::DiffView};
+use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
 
 /// Minimum gap between watcher-triggered refreshes. Bursty writers (saves,
 /// builds) collapse into one status scan per window instead of one per event.
@@ -29,9 +32,26 @@ pub struct RepoTab {
     pub staged: Vec<FileChange>,
     pub unstaged: Vec<FileChange>,
     pub commits: Vec<CommitInfo>,
+    /// Lane layout for `commits`; recomputed whenever `commits` changes.
+    pub graph: Graph,
     pub history_done: bool,
     pub selection: Option<DiffKey>,
     pub diff: Option<DiffView>,
+    /// Raw diff of the selected commit: feeds the right-panel file list and
+    /// per-file diff views. Set when a `DiffKey::Commit` reply arrives.
+    pub commit_diff: Option<DiffData>,
+    /// File from `commit_diff` open in the center diff view; `None` keeps
+    /// the graph visible.
+    pub commit_file: Option<String>,
+    /// `Some` while the repo is mid-merge; drives the merge banner, the
+    /// merge-commit message prefill, and the commit gate.
+    pub merging: Option<MergeInfo>,
+    /// Parsed conflict for the `DiffKey::Conflict` selection, `None` while
+    /// the reply is in flight.
+    pub conflict: Option<ConflictView>,
+    /// Abort-merge awaiting confirmation, same arm-then-confirm flow as
+    /// checkout and discard.
+    pub pending_abort_merge: bool,
     pub commit_msg: String,
     /// Branch the user clicked but hasn't confirmed switching to yet. While
     /// set, the confirm dialog is shown; the checkout only fires on confirm.
@@ -66,9 +86,15 @@ impl RepoTab {
             staged: Vec::new(),
             unstaged: Vec::new(),
             commits: Vec::new(),
+            graph: Graph::default(),
             history_done: true,
             selection: None,
             diff: None,
+            commit_diff: None,
+            commit_file: None,
+            merging: None,
+            conflict: None,
+            pending_abort_merge: false,
             commit_msg: String::new(),
             pending_checkout: None,
             pending_discard: None,
@@ -83,7 +109,18 @@ impl RepoTab {
     }
 
     pub fn can_commit(&self) -> bool {
-        !self.staged.is_empty() && !self.commit_msg.trim().is_empty() && !self.committing
+        // Mid-merge an empty stage is fine: a merge resolved entirely to
+        // HEAD's content stages nothing, yet the merge commit must happen.
+        (!self.staged.is_empty() || self.merging.is_some())
+            && !self.has_conflicts()
+            && !self.commit_msg.trim().is_empty()
+            && !self.committing
+    }
+
+    pub fn has_conflicts(&self) -> bool {
+        self.unstaged
+            .iter()
+            .any(|f| f.kind == ChangeKind::Conflicted)
     }
 }
 
@@ -279,18 +316,45 @@ impl GitGudApp {
                         t.branches = d.branches;
                         t.staged = d.staged;
                         t.unstaged = d.unstaged;
+                        // Entering a merge: seed the commit box with git's
+                        // suggested message, but never clobber user text.
+                        if t.merging.is_none()
+                            && let Some(m) = &d.merging
+                            && t.commit_msg.trim().is_empty()
+                        {
+                            t.commit_msg = m.msg.clone();
+                        }
+                        // Merge ended (committed or aborted): a stale armed
+                        // abort would fire against nothing, and an aborted
+                        // merge's prefilled message must not linger for the
+                        // next ordinary commit.
+                        if let Some(m) = &t.merging
+                            && d.merging.is_none()
+                        {
+                            t.pending_abort_merge = false;
+                            if t.commit_msg.trim() == m.msg.trim() {
+                                t.commit_msg.clear();
+                            }
+                        }
+                        t.merging = d.merging;
                         // A refresh can remove the file we were diffing
-                        // (e.g. it was staged) -- drop the stale selection.
+                        // (e.g. it was staged) or resolve the conflict we
+                        // were viewing -- drop the stale selection.
                         let stale = match &t.selection {
                             Some(DiffKey::Workdir { path, staged }) => {
                                 let list = if *staged { &t.staged } else { &t.unstaged };
                                 !list.iter().any(|f| f.path == *path)
                             }
+                            Some(DiffKey::Conflict { path }) => !t
+                                .unstaged
+                                .iter()
+                                .any(|f| f.path == *path && f.kind == ChangeKind::Conflicted),
                             _ => false,
                         };
                         if stale {
                             t.selection = None;
                             t.diff = None;
+                            t.conflict = None;
                         }
                     }
                     Err(e) => t.log = Some((true, e)),
@@ -306,6 +370,7 @@ impl GitGudApp {
                             t.commits.extend(page.commits);
                         }
                         t.history_done = page.reached_end;
+                        t.graph = crate::git::graph::compute(&t.commits);
                     }
                     Err(e) => t.log = Some((true, e)),
                 }
@@ -315,7 +380,36 @@ impl GitGudApp {
                 // Only accept the reply for the *current* selection.
                 if t.selection.as_ref() == Some(&key) {
                     match result {
-                        Ok(data) => t.diff = Some(DiffView::build(data)),
+                        Ok(data) => match key {
+                            // LoadDiff is never sent with a Conflict key.
+                            DiffKey::Conflict { .. } => {}
+                            DiffKey::Workdir { .. } => t.diff = Some(DiffView::build(data)),
+                            DiffKey::Commit { .. } => {
+                                t.commit_diff = Some(data);
+                                // A file may already be open in the center
+                                // (e.g. a re-sent diff): rebuild it from the
+                                // fresh data, or drop it if the file is gone.
+                                if let Some(path) = t.commit_file.clone() {
+                                    t.diff = DiffView::build_one(
+                                        t.commit_diff.as_ref().unwrap(),
+                                        &path,
+                                    );
+                                    if t.diff.is_none() {
+                                        t.commit_file = None;
+                                    }
+                                }
+                            }
+                        },
+                        Err(e) => t.log = Some((true, e)),
+                    }
+                }
+            }
+            Update::Conflict { path, result, .. } => {
+                let t = &mut self.tabs[idx];
+                // Only accept the reply for the *current* selection.
+                if t.selection == Some(DiffKey::Conflict { path: path.clone() }) {
+                    match result {
+                        Ok(file) => t.conflict = Some(ConflictView::build(path, file)),
                         Err(e) => t.log = Some((true, e)),
                     }
                 }
@@ -344,11 +438,14 @@ impl GitGudApp {
                 if ok {
                     self.send(Job::Refresh { id });
                     // Push moves the remote-tracking ref, so history decorations
-                    // and ahead/behind counts both need recomputing.
+                    // and ahead/behind counts both need recomputing. A clean
+                    // merge creates a commit; an abort moves HEAD's state back.
                     if matches!(
                         kind,
                         ActionKind::Commit
                             | ActionKind::Checkout
+                            | ActionKind::Merge
+                            | ActionKind::AbortMerge
                             | ActionKind::Fetch
                             | ActionKind::Push
                             | ActionKind::Pull
@@ -373,6 +470,10 @@ fn job_id(job: &Job) -> RepoId {
         | Job::Discard { id, .. }
         | Job::Commit { id, .. }
         | Job::Checkout { id, .. }
+        | Job::Merge { id, .. }
+        | Job::AbortMerge { id }
+        | Job::LoadConflict { id, .. }
+        | Job::ResolveConflict { id, .. }
         | Job::Fetch { id }
         | Job::Push { id }
         | Job::Pull { id } => *id,
@@ -385,6 +486,7 @@ fn update_id(upd: &Update) -> RepoId {
         | Update::Refreshed { id, .. }
         | Update::History { id, .. }
         | Update::Diff { id, .. }
+        | Update::Conflict { id, .. }
         | Update::Acted { id, .. } => *id,
     }
 }
@@ -403,11 +505,12 @@ impl eframe::App for GitGudApp {
             }
         }
 
-        let (f5, ctrl_enter, ctrl_p, focused) = ui.ctx().input(|i| {
+        let (f5, ctrl_enter, ctrl_p, esc, focused) = ui.ctx().input(|i| {
             (
                 i.key_pressed(Key::F5),
                 i.modifiers.command && i.key_pressed(Key::Enter),
                 i.modifiers.command && i.key_pressed(Key::P),
+                i.key_pressed(Key::Escape),
                 i.viewport().focused.unwrap_or(true),
             )
         });
@@ -449,6 +552,25 @@ impl eframe::App for GitGudApp {
             // Same gate as the top-bar PUSH button.
             if ctrl_p && t.loaded {
                 jobs.push(Job::Push { id: t.id });
+            }
+            // Escape backs out one level: open file -> graph, then selection
+            // -> nothing. Skipped while a confirm modal is up, where Escape
+            // already means "close the modal".
+            if esc
+                && t.pending_checkout.is_none()
+                && t.pending_discard.is_none()
+                && !t.pending_abort_merge
+            {
+                if t.commit_file.is_some() {
+                    t.commit_file = None;
+                    t.diff = None;
+                } else if t.selection.is_some() {
+                    t.selection = None;
+                    t.diff = None;
+                    t.commit_diff = None;
+                    t.commit_file = None;
+                    t.conflict = None;
+                }
             }
         }
 
@@ -501,7 +623,7 @@ impl eframe::App for GitGudApp {
             let tab = &mut self.tabs[self.active];
             Panel::left("ops")
                 .resizable(true)
-                .default_size(300.0)
+                .default_size(240.0)
                 .frame(Frame::new().inner_margin(Margin {
                     left: 10,
                     right: 4,
@@ -509,24 +631,41 @@ impl eframe::App for GitGudApp {
                     bottom: 8,
                 }))
                 .show_inside(ui, |ui| ui::sidebar::show(ui, tab, &mut jobs));
-            Panel::left("history")
+            Panel::right("worktree")
                 .resizable(true)
-                .default_size(430.0)
-                .frame(Frame::new().inner_margin(Margin {
-                    left: 4,
-                    right: 4,
-                    top: 2,
-                    bottom: 8,
-                }))
-                .show_inside(ui, |ui| ui::history::show(ui, tab, &mut jobs));
-            CentralPanel::default()
+                .default_size(340.0)
                 .frame(Frame::new().inner_margin(Margin {
                     left: 4,
                     right: 10,
                     top: 2,
                     bottom: 8,
                 }))
-                .show_inside(ui, |ui| ui::diff::show(ui, tab));
+                .show_inside(ui, |ui| ui::worktree::show(ui, tab, &mut jobs));
+            // Center: the graph by default; the diff viewer while a working-
+            // tree file is open, or while a file of the selected commit is.
+            enum Center {
+                Graph,
+                Diff,
+                Conflict,
+            }
+            let center = match &tab.selection {
+                Some(DiffKey::Workdir { .. }) => Center::Diff,
+                Some(DiffKey::Commit { .. }) if tab.commit_file.is_some() => Center::Diff,
+                Some(DiffKey::Conflict { .. }) => Center::Conflict,
+                _ => Center::Graph,
+            };
+            CentralPanel::default()
+                .frame(Frame::new().inner_margin(Margin {
+                    left: 4,
+                    right: 4,
+                    top: 2,
+                    bottom: 8,
+                }))
+                .show_inside(ui, |ui| match center {
+                    Center::Diff => ui::diff::show(ui, tab),
+                    Center::Conflict => ui::conflict::show(ui, tab, &mut jobs),
+                    Center::Graph => ui::graph::show(ui, tab, &mut jobs),
+                });
         }
 
         // CRT scanlines over the whole frame, then the outer HUD bezel:

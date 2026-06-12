@@ -10,6 +10,7 @@
 //! across threads without locks -- Rust's ownership model makes this a
 //! compile-time guarantee, not a convention.
 
+pub mod graph;
 pub mod ops;
 pub mod worker;
 
@@ -70,6 +71,29 @@ pub enum Job {
         id: RepoId,
         branch: String,
     },
+    /// Merge `branch` into HEAD via the git CLI (respects the user's merge
+    /// config and hooks). A conflicted merge is a *successful* job: the repo
+    /// enters the merge state and the conflicts surface through `Refresh`.
+    Merge {
+        id: RepoId,
+        branch: String,
+    },
+    /// `git merge --abort`: restore the pre-merge state. Destructive to
+    /// resolution progress -- the UI confirms first.
+    AbortMerge {
+        id: RepoId,
+    },
+    /// Parse one conflicted file into its marker segments.
+    LoadConflict {
+        id: RepoId,
+        path: String,
+    },
+    /// Write a conflict resolution to the working tree and stage it.
+    ResolveConflict {
+        id: RepoId,
+        path: String,
+        resolution: Resolution,
+    },
     /// Runs `git fetch --all --prune` via the CLI on its own thread.
     Fetch {
         id: RepoId,
@@ -107,12 +131,28 @@ pub enum Update {
         key: DiffKey,
         result: Result<DiffData, String>,
     },
+    /// Echoes the `path` so the UI can drop replies for stale selections.
+    Conflict {
+        id: RepoId,
+        path: String,
+        result: Result<ConflictFile, String>,
+    },
     /// Outcome of a mutating action; `Ok` carries a status-bar message.
     Acted {
         id: RepoId,
         kind: ActionKind,
         result: Result<String, String>,
     },
+}
+
+/// How to settle one conflicted file. `Ours`/`Theirs` take a whole side from
+/// the index (also covers binary and delete-vs-modify conflicts); `Content`
+/// carries the text assembled from per-block choices in the conflict view.
+#[derive(Debug, Clone)]
+pub enum Resolution {
+    Ours,
+    Theirs,
+    Content(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +162,9 @@ pub enum ActionKind {
     Discard,
     Commit,
     Checkout,
+    Merge,
+    AbortMerge,
+    Resolve,
     Fetch,
     Push,
     Pull,
@@ -144,6 +187,17 @@ pub struct RefreshData {
     pub staged: Vec<FileChange>,
     /// Working-tree changes not yet staged (includes untracked files).
     pub unstaged: Vec<FileChange>,
+    /// `Some` while a merge is in progress (MERGE_HEAD exists), whether it
+    /// was started here or in an external terminal.
+    pub merging: Option<MergeInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MergeInfo {
+    /// Short id of MERGE_HEAD, for the banner readout.
+    pub head_short: String,
+    /// Suggested commit message from `.git/MERGE_MSG` ("Merge branch 'x'").
+    pub msg: String,
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +267,9 @@ pub struct CommitInfo {
     pub is_merge: bool,
     /// Branch names pointing at this commit, for decoration chips.
     pub refs: Vec<String>,
+    /// Full 40-char ids of the parent commits, first parent first. Drives
+    /// the graph lane layout in [`graph`].
+    pub parents: Vec<String>,
 }
 
 /// Identifies what the diff panel is showing. `PartialEq` lets the UI check
@@ -224,16 +281,53 @@ pub enum DiffKey {
     Workdir { path: String, staged: bool },
     /// Every file touched by one commit (vs its first parent).
     Commit { id: String },
+    /// One conflicted file, shown in the resolution view instead of a diff.
+    Conflict { path: String },
 }
 
-#[derive(Debug)]
+/// One conflicted file, classified by what resolution UI it supports.
+#[derive(Debug, Clone)]
+pub enum ConflictFile {
+    /// Both sides changed a text file; the working tree holds marker blocks
+    /// that can be resolved per block.
+    Text {
+        /// Labels from the markers: `<<<<<<< HEAD` / `>>>>>>> branch`.
+        ours_label: String,
+        theirs_label: String,
+        segments: Vec<ConflictSegment>,
+        /// Whether the original file ended with a newline, so reassembly
+        /// does not dirty the last line.
+        trailing_newline: bool,
+    },
+    /// No markers to pick through; whole-file ours/theirs only.
+    Binary,
+    /// Deleted on our side, modified on theirs: ours = stay deleted.
+    DeletedByUs,
+    /// Modified here, deleted on theirs: theirs = delete the file.
+    DeletedByThem,
+}
+
+/// A run of lines from a conflicted file: either shared context or one
+/// `<<<<<<<` ... `>>>>>>>` block. A diff3/zdiff3 `|||||||` base section is
+/// consumed by the parser but not kept -- resolution is choice-driven, so
+/// the base never reaches the output.
+#[derive(Debug, Clone)]
+pub enum ConflictSegment {
+    Context(Vec<String>),
+    Conflict {
+        ours: Vec<String>,
+        theirs: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct DiffData {
     pub files: Vec<FileDiff>,
     pub adds: usize,
     pub dels: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileDiff {
     pub path: String,
     pub adds: usize,
@@ -242,7 +336,7 @@ pub struct FileDiff {
     pub lines: Vec<DiffLine>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DiffLine {
     pub kind: LineKind,
     /// Line numbers in the old/new file; 0 means "no number" (e.g. an added

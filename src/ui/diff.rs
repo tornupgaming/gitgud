@@ -5,12 +5,12 @@
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
-    Align2, CornerRadius, Rect, ScrollArea, Sense, Spinner, Stroke, StrokeKind, TextStyle, Ui,
-    pos2, vec2,
+    Align, Align2, CornerRadius, Layout, Rect, ScrollArea, Sense, Spinner, Stroke, StrokeKind,
+    TextStyle, Ui, pos2, vec2,
 };
 
 use super::highlight::{LineHighlighter, Spans};
-use super::{char_w, module, text_width, truncate_right};
+use super::{HudButton, char_w, module, text_width, truncate_right};
 use crate::app::RepoTab;
 use crate::git::{DiffData, DiffKey, DiffLine, LineKind};
 use crate::theme::{self, ACCENT, AMBER, BG2, BORDER, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
@@ -68,51 +68,57 @@ impl DiffView {
             rows,
         }
     }
+
+    /// View of one file out of an already-loaded commit diff (the right
+    /// panel's file list). `None` when `path` isn't in `data`.
+    pub fn build_one(data: &DiffData, path: &str) -> Option<Self> {
+        let f = data.files.iter().find(|f| f.path == path)?.clone();
+        Some(Self::build(DiffData {
+            adds: f.adds,
+            dels: f.dels,
+            files: vec![f],
+        }))
+    }
 }
 
-pub fn show(ui: &mut Ui, tab: &RepoTab) {
-    let readout = match (&tab.selection, &tab.diff) {
-        (None, _) => "STANDBY".to_owned(),
-        (Some(_), None) => "SCANNING".to_owned(),
-        (Some(_), Some(v)) => format!("+{} −{}", v.adds, v.dels),
+pub fn show(ui: &mut Ui, tab: &mut RepoTab) {
+    let readout = match &tab.diff {
+        None => "SCANNING".to_owned(),
+        Some(v) => format!("+{} −{}", v.adds, v.dels),
     };
+    // The back click mutates `tab`, which the module closure borrows -- so
+    // it's recorded here and applied after layout.
+    let mut close = false;
     module(ui, None, "DIFF ANALYSIS", &readout, |ui| {
-        let Some(key) = &tab.selection else {
-            standby(ui);
-            return;
-        };
+        // The center only routes here while something is selected.
+        let Some(key) = &tab.selection else { return };
         let Some(view) = &tab.diff else {
             // Selection made but the worker hasn't answered yet.
             ui.add_space(ui.available_height() * 0.45);
             ui.vertical_centered(|ui| ui.add(Spinner::new().size(24.0).color(ACCENT)));
             return;
         };
-        header(ui, tab, key, view);
+        // Header row with the back-to-graph affordance on its right edge.
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                close = ui.add(HudButton::new("◀ GRAPH").small(true)).clicked();
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    header(ui, tab, key, view);
+                });
+            });
+        });
         ui.add_space(4.0);
         body(ui, view);
     });
-}
-
-/// Idle screen: a bracketed "no target" readout in the module's center.
-fn standby(ui: &mut Ui) {
-    ui.add_space(ui.available_height() * 0.45);
-    let cx = ui.max_rect().center().x;
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
-    let text = theme::tracked_text(
-        ui.painter(),
-        pos2(cx, r.center().y),
-        Align2::CENTER_CENTER,
-        "AWAITING TARGET · SELECT A FILE OR COMMIT",
-        theme::display_font(12.0),
-        DIM,
-        2.0,
-    );
-    theme::corner_brackets(
-        ui.painter(),
-        text.expand2(vec2(14.0, 8.0)),
-        8.0,
-        Stroke::new(1.0, theme::alpha(ACCENT, 120)),
-    );
+    if close {
+        if tab.commit_file.is_some() {
+            // Back to the graph; the commit stays selected in the right panel.
+            tab.commit_file = None;
+        } else {
+            tab.selection = None;
+        }
+        tab.diff = None;
+    }
 }
 
 fn header(ui: &mut Ui, tab: &RepoTab, key: &DiffKey, view: &DiffView) {
@@ -131,6 +137,8 @@ fn header(ui: &mut Ui, tab: &RepoTab, key: &DiffKey, view: &DiffView) {
             };
             ("COMMIT", PURPLE, title)
         }
+        // Conflict selections route to the conflict view, never here.
+        DiffKey::Conflict { path } => ("CONFLICT", RED, path.clone()),
     };
 
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());

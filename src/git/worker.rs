@@ -144,6 +144,42 @@ fn run_job(
                 result,
             })
         }
+        Job::Merge { id, branch } => {
+            // Local but shells out to the CLI so the user's merge config,
+            // strategies, and hooks all apply.
+            let (_, workdir) = repos.get(&id)?;
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::Merge,
+                result: ops::merge(workdir, &branch),
+            })
+        }
+        Job::AbortMerge { id } => {
+            let (_, workdir) = repos.get(&id)?;
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::AbortMerge,
+                result: ops::abort_merge(workdir),
+            })
+        }
+        Job::LoadConflict { id, path } => {
+            let (repo, _) = repos.get(&id)?;
+            let result = ops::load_conflict(repo, &path);
+            Some(Update::Conflict { id, path, result })
+        }
+        Job::ResolveConflict {
+            id,
+            path,
+            resolution,
+        } => {
+            let (repo, _) = repos.get(&id)?;
+            let result = ops::resolve(repo, &path, &resolution);
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::Resolve,
+                result,
+            })
+        }
         Job::Fetch { id } => {
             // Network can take seconds; run it on its own thread so local
             // jobs (stage, refresh) are not stuck behind it in the queue.

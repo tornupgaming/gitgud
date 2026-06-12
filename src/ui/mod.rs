@@ -1,11 +1,13 @@
 //! Shared UI chrome: the floating HUD module frame and text helpers.
 
+pub mod conflict;
 pub mod diff;
+pub mod graph;
 mod highlight;
-pub mod history;
 pub mod shell;
 pub mod sidebar;
 pub mod widgets;
+pub mod worktree;
 
 pub use shell::{TopBarAction, empty_state, status_bar, top_bar};
 pub use widgets::HudButton;
@@ -127,6 +129,33 @@ pub(crate) fn sub_label(ui: &Ui, rect: Rect, text: &str) {
         DIM,
         1.5,
     );
+}
+
+/// Commit age as a coarse relative time ("3h ago"). Shared by the graph and
+/// the commit-detail panel.
+pub(crate) fn rel_time(commit_time: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let s = (now - commit_time).max(0);
+    const MIN: i64 = 60;
+    const HOUR: i64 = 60 * MIN;
+    const DAY: i64 = 24 * HOUR;
+    const MONTH: i64 = 30 * DAY;
+    const YEAR: i64 = 365 * DAY;
+    if s < MIN {
+        "now".to_owned()
+    } else if s < HOUR {
+        format!("{}m ago", s / MIN)
+    } else if s < DAY {
+        format!("{}h ago", s / HOUR)
+    } else if s < MONTH {
+        format!("{}d ago", s / DAY)
+    } else if s < YEAR {
+        format!("{}mo ago", s / MONTH)
+    } else {
+        format!("{}y ago", s / YEAR)
+    }
 }
 
 /// Monospace glyph width -- the diff viewer's gutter math assumes one width

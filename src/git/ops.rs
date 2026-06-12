@@ -8,13 +8,14 @@ use std::process::Command;
 
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, DiffOptions, ErrorCode, IndexAddOption, Oid, Repository, Sort, Status,
-    StatusOptions,
+    BranchType, DiffOptions, ErrorCode, IndexAddOption, Oid, Repository, RepositoryState, Sort,
+    Status, StatusOptions,
 };
 
 use super::{
-    BranchInfo, ChangeKind, CommitInfo, DiffData, DiffKey, DiffLine, FileChange, FileDiff,
-    HistoryPage, LineKind, RefreshData, RepoMeta,
+    BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey,
+    DiffLine, FileChange, FileDiff, HistoryPage, LineKind, MergeInfo, RefreshData, RepoMeta,
+    Resolution,
 };
 
 /// Stop collecting diff lines past this point so a pathological diff
@@ -133,12 +134,40 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
     staged.sort_by(|a, b| a.path.cmp(&b.path));
     unstaged.sort_by(|a, b| a.path.cmp(&b.path));
 
+    let merging = (repo.state() == RepositoryState::Merge).then(|| {
+        let head_short = repo
+            .find_reference("MERGE_HEAD")
+            .ok()
+            .and_then(|r| r.target())
+            .map(short_id)
+            .or_else(|| {
+                // Fallback when the ref lookup fails: MERGE_HEAD is a plain
+                // file holding one full hex id per merged head.
+                std::fs::read_to_string(repo.path().join("MERGE_HEAD"))
+                    .ok()
+                    .map(|s| s.trim().chars().take(7).collect())
+            })
+            .unwrap_or_default();
+        let msg = std::fs::read_to_string(repo.path().join("MERGE_MSG"))
+            .map(|s| {
+                s.lines()
+                    .filter(|l| !l.starts_with('#'))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim()
+                    .to_string()
+            })
+            .unwrap_or_default();
+        MergeInfo { head_short, msg }
+    });
+
     Ok(RefreshData {
         head,
         head_detached,
         branches: locals,
         staged,
         unstaged,
+        merging,
     })
 }
 
@@ -225,6 +254,7 @@ pub fn history(repo: &Repository, skip: usize, limit: usize) -> Result<HistoryPa
             time: commit.time().seconds(),
             is_merge: commit.parent_count() > 1,
             refs: decorations.get(&oid).cloned().unwrap_or_default(),
+            parents: commit.parent_ids().map(|p| p.to_string()).collect(),
         });
     }
     Ok(HistoryPage {
@@ -282,6 +312,8 @@ pub fn diff(repo: &Repository, key: &DiffKey) -> Result<DiffData, String> {
             repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)
                 .map_err(g)?
         }
+        // Conflicted files go through `load_conflict`, never the diff path.
+        DiffKey::Conflict { .. } => return Err("conflicted file has no diff".to_string()),
     };
 
     let state = RefCell::new(DiffState::default());
@@ -497,16 +529,30 @@ pub fn commit(repo: &Repository, message: &str) -> Result<String, String> {
         Err(e) if e.code() == ErrorCode::UnbornBranch => None,
         Err(e) => return Err(g(e)),
     };
-    if let Some(parent) = &parent
+    let merge_head = match repo.find_reference("MERGE_HEAD") {
+        Ok(r) => {
+            let oid = r.target().ok_or("MERGE_HEAD is not a direct reference")?;
+            Some(repo.find_commit(oid).map_err(g)?)
+        }
+        Err(_) => None,
+    };
+    // A merge resolved entirely to HEAD's content is still a legal merge
+    // commit (it records the second parent), so the empty-commit guard only
+    // applies outside a merge.
+    if merge_head.is_none()
+        && let Some(parent) = &parent
         && parent.tree_id() == tree_id
     {
         return Err("nothing staged to commit".to_string());
     }
-    // `parents` must be a slice of references; Option -> 0-or-1-element Vec.
-    let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
+    let parents: Vec<&git2::Commit<'_>> = parent.iter().chain(merge_head.iter()).collect();
     let oid = repo
         .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
         .map_err(g)?;
+    if merge_head.is_some() {
+        // Drop MERGE_HEAD/MERGE_MSG so the repo leaves the merge state.
+        repo.cleanup_state().map_err(g)?;
+    }
     Ok(format!("committed {}", short_id(oid)))
 }
 
@@ -535,6 +581,231 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
         .map_err(g)?;
     repo.set_head(&format!("refs/heads/{local}")).map_err(g)?;
     Ok(format!("switched to {local}"))
+}
+
+pub fn merge(workdir: &Path, branch: &str) -> Result<String, String> {
+    let output = git_output(workdir, &["merge", branch])?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if output.status.success() {
+        // First stdout line is git's summary: "Merge made by the 'ort'
+        // strategy." / "Already up to date." / "Updating abc..def" (ff).
+        return Ok(stdout
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
+            .unwrap_or_else(|| "merge complete".to_string()));
+    }
+    // A conflicted merge exits nonzero but is a *successful* job: the repo is
+    // now in the merge state and the follow-up Refresh surfaces the conflicts.
+    if stdout.contains("CONFLICT")
+        || stderr.contains("CONFLICT")
+        || stdout.contains("Automatic merge failed")
+        || stderr.contains("Automatic merge failed")
+    {
+        let n = stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter(|l| l.starts_with("CONFLICT"))
+            .count();
+        return Ok(match n {
+            0 => "merge conflicts — resolve and commit".to_string(),
+            n => format!("merge conflicts in {n} file(s) — resolve and commit"),
+        });
+    }
+    // Genuine failure: unknown branch, dirty worktree, already merging, ...
+    let last = stderr
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .or_else(|| stdout.lines().rev().find(|l| !l.trim().is_empty()));
+    Err(last
+        .map(|l| l.trim().to_string())
+        .unwrap_or_else(|| "git merge failed".to_string()))
+}
+
+pub fn abort_merge(workdir: &Path) -> Result<String, String> {
+    run_git(workdir, &["merge", "--abort"], "git merge --abort failed")?;
+    Ok("merge aborted".to_string())
+}
+
+pub fn load_conflict(repo: &Repository, path: &str) -> Result<ConflictFile, String> {
+    let conflict = find_conflict(&repo.index().map_err(g)?, path)?;
+    if conflict.our.is_none() {
+        return Ok(ConflictFile::DeletedByUs);
+    }
+    if conflict.their.is_none() {
+        return Ok(ConflictFile::DeletedByThem);
+    }
+    let blob_binary = [&conflict.our, &conflict.their].into_iter().any(|e| {
+        e.as_ref()
+            .and_then(|e| repo.find_blob(e.id).ok())
+            .is_some_and(|b| b.is_binary())
+    });
+    let bytes = std::fs::read(workdir_path(repo, path)?).map_err(|e| e.to_string())?;
+    // Same heuristic as git: a NUL early in the file means binary.
+    if blob_binary || bytes.iter().take(8000).any(|&b| b == 0) {
+        return Ok(ConflictFile::Binary);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let (segments, ours_label, theirs_label) = parse_conflict(&text);
+    Ok(ConflictFile::Text {
+        ours_label,
+        theirs_label,
+        segments,
+        trailing_newline: text.ends_with('\n'),
+    })
+}
+
+/// Splits a file holding `<<<<<<<` markers into context runs and conflict
+/// blocks. Returns the segments plus the ours/theirs labels from the first
+/// block (they are identical across blocks); defaults "OURS"/"THEIRS".
+fn parse_conflict(text: &str) -> (Vec<ConflictSegment>, String, String) {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut segments = Vec::new();
+    let mut context: Vec<String> = Vec::new();
+    let mut ours_label = String::new();
+    let mut theirs_label = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if marker_label(lines[i], "<<<<<<<").is_some()
+            && let Some((segment, ol, tl, next)) = scan_block(&lines, i)
+        {
+            if !context.is_empty() {
+                segments.push(ConflictSegment::Context(std::mem::take(&mut context)));
+            }
+            if ours_label.is_empty() {
+                ours_label = ol;
+            }
+            if theirs_label.is_empty() {
+                theirs_label = tl;
+            }
+            segments.push(segment);
+            i = next;
+        } else {
+            // Includes dangling markers from blocks that never close:
+            // malformed input degrades to context instead of erroring.
+            context.push(lines[i].to_string());
+            i += 1;
+        }
+    }
+    if !context.is_empty() {
+        segments.push(ConflictSegment::Context(context));
+    }
+    if ours_label.is_empty() {
+        ours_label = "OURS".to_string();
+    }
+    if theirs_label.is_empty() {
+        theirs_label = "THEIRS".to_string();
+    }
+    (segments, ours_label, theirs_label)
+}
+
+/// One conflict block opening at `lines[start]`. Returns the segment, both
+/// labels, and the index just past the closing `>>>>>>>` -- or None when the
+/// block never closes (the caller then degrades the lines to context).
+fn scan_block(lines: &[&str], start: usize) -> Option<(ConflictSegment, String, String, usize)> {
+    let ours_label = marker_label(lines[start], "<<<<<<<")?.to_string();
+    let mut ours = Vec::new();
+    let mut theirs = Vec::new();
+    // 0 = ours, 1 = base (diff3/zdiff3 `|||||||` section, discarded),
+    // 2 = theirs.
+    let mut section = 0;
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        match section {
+            0 | 1 => {
+                if *line == "=======" {
+                    section = 2;
+                } else if section == 0 && marker_label(line, "|||||||").is_some() {
+                    section = 1;
+                } else if section == 0 {
+                    ours.push((*line).to_string());
+                }
+                // section 1: base lines are consumed but never kept.
+            }
+            _ => {
+                if let Some(theirs_label) = marker_label(line, ">>>>>>>") {
+                    return Some((
+                        ConflictSegment::Conflict { ours, theirs },
+                        ours_label,
+                        theirs_label.to_string(),
+                        i + 1,
+                    ));
+                }
+                theirs.push((*line).to_string());
+            }
+        }
+    }
+    None
+}
+
+/// `">>>>>>> feature"` -> `Some("feature")`; None when the line is not this
+/// marker. Git always writes a space after the 7 marker chars (only the
+/// `=======` separator stands alone, matched exactly elsewhere).
+fn marker_label<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    line.strip_prefix(marker)?.strip_prefix(' ').map(str::trim)
+}
+
+pub fn resolve(repo: &Repository, path: &str, resolution: &Resolution) -> Result<String, String> {
+    let mut index = repo.index().map_err(g)?;
+    let rel = Path::new(path);
+    let file = workdir_path(repo, path)?;
+    let msg = match resolution {
+        Resolution::Content(text) => {
+            std::fs::write(&file, text).map_err(|e| e.to_string())?;
+            // add_path also clears the conflict stages for this path.
+            index.add_path(rel).map_err(g)?;
+            format!("resolved {path}")
+        }
+        Resolution::Ours | Resolution::Theirs => {
+            let conflict = find_conflict(&index, path)?;
+            let (side, label) = match resolution {
+                Resolution::Ours => (&conflict.our, "ours"),
+                _ => (&conflict.their, "theirs"),
+            };
+            match side {
+                Some(entry) => {
+                    let blob = repo.find_blob(entry.id).map_err(g)?;
+                    std::fs::write(&file, blob.content()).map_err(|e| e.to_string())?;
+                    index.add_path(rel).map_err(g)?;
+                    format!("resolved {path} ({label})")
+                }
+                None => {
+                    // The chosen side deleted the file: make the deletion win.
+                    if file.exists() {
+                        std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+                    }
+                    index.remove_path(rel).map_err(g)?;
+                    format!("resolved {path} — deleted")
+                }
+            }
+        }
+    };
+    index.write().map_err(g)?;
+    Ok(msg)
+}
+
+fn entry_is(entry: &Option<git2::IndexEntry>, path: &[u8]) -> bool {
+    entry.as_ref().is_some_and(|e| e.path == path)
+}
+
+fn find_conflict(index: &git2::Index, path: &str) -> Result<git2::IndexConflict, String> {
+    let p = path.as_bytes();
+    index
+        .conflicts()
+        .map_err(g)?
+        .filter_map(Result::ok)
+        .find(|c| entry_is(&c.our, p) || entry_is(&c.their, p) || entry_is(&c.ancestor, p))
+        .ok_or_else(|| "not conflicted".to_string())
+}
+
+/// Repo-relative `/`-separated path -> absolute workdir path (`join` accepts
+/// forward slashes on Windows).
+fn workdir_path(repo: &Repository, path: &str) -> Result<std::path::PathBuf, String> {
+    Ok(repo
+        .workdir()
+        .ok_or("bare repositories are not supported")?
+        .join(path))
 }
 
 pub fn fetch(workdir: &Path) -> Result<String, String> {
@@ -577,6 +848,27 @@ pub fn pull(workdir: &Path) -> Result<String, String> {
         Some(line) => Ok(format!("pull complete — {}", line.trim())),
         None => Ok("pull complete".to_string()),
     }
+}
+
+/// Like `run_git` but hands back the raw `Output` even on nonzero exit:
+/// `merge` must inspect the stdout/stderr of *failed* runs to tell a
+/// conflicted merge (job succeeded, repo is merging) from a genuine error.
+fn git_output(workdir: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(workdir).args(args);
+    #[cfg(windows)]
+    {
+        // CREATE_NO_WINDOW: stop a console window from flashing up.
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "git CLI not found on PATH".to_string()
+        } else {
+            e.to_string()
+        }
+    })
 }
 
 /// Shells out to the git CLI in `workdir` so the user's credential helpers
@@ -669,6 +961,252 @@ mod tests {
 
         assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "original");
         assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "edit b");
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- conflict marker parser ----
+
+    fn block(seg: &ConflictSegment) -> (&[String], &[String]) {
+        match seg {
+            ConflictSegment::Conflict { ours, theirs } => (ours, theirs),
+            other => panic!("expected Conflict segment, got {other:?}"),
+        }
+    }
+
+    fn context(seg: &ConflictSegment) -> &[String] {
+        match seg {
+            ConflictSegment::Context(lines) => lines,
+            other => panic!("expected Context segment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_single_block_with_labels() {
+        let text = "ctx1\n<<<<<<< HEAD\nour line\n=======\ntheir line\n>>>>>>> feature\nctx2\n";
+        let (segs, ours_label, theirs_label) = parse_conflict(text);
+        assert_eq!(ours_label, "HEAD");
+        assert_eq!(theirs_label, "feature");
+        assert_eq!(segs.len(), 3);
+        assert_eq!(context(&segs[0]), ["ctx1"]);
+        let (ours, theirs) = block(&segs[1]);
+        assert_eq!(ours, ["our line"]);
+        assert_eq!(theirs, ["their line"]);
+        assert_eq!(context(&segs[2]), ["ctx2"]);
+    }
+
+    #[test]
+    fn parse_multiple_blocks_with_context_between() {
+        let text = "<<<<<<< HEAD\na1\n=======\nb1\n>>>>>>> dev\nmid1\nmid2\n\
+                    <<<<<<< HEAD\na2\n=======\nb2\n>>>>>>> dev\n";
+        let (segs, ours_label, theirs_label) = parse_conflict(text);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(block(&segs[0]).0, ["a1"]);
+        assert_eq!(context(&segs[1]), ["mid1", "mid2"]);
+        assert_eq!(block(&segs[2]).1, ["b2"]);
+        assert_eq!(ours_label, "HEAD");
+        assert_eq!(theirs_label, "dev");
+    }
+
+    #[test]
+    fn parse_diff3_base_section() {
+        let text =
+            "<<<<<<< HEAD\nour\n||||||| merged common ancestors\nold\n=======\ntheir\n>>>>>>> dev\n";
+        let (segs, _, _) = parse_conflict(text);
+        assert_eq!(segs.len(), 1);
+        let (ours, theirs) = block(&segs[0]);
+        assert_eq!(ours, ["our"]);
+        assert_eq!(theirs, ["their"], "base section must be discarded");
+    }
+
+    #[test]
+    fn parse_no_trailing_newline() {
+        let text = "<<<<<<< HEAD\no\n=======\nt\n>>>>>>> br";
+        let (segs, _, theirs_label) = parse_conflict(text);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(block(&segs[0]).1, ["t"]);
+        assert_eq!(theirs_label, "br");
+    }
+
+    #[test]
+    fn parse_dangling_marker_degrades_to_context() {
+        let text = "<<<<<<< HEAD\nour\n=======\ntheir\n";
+        let (segs, ours_label, theirs_label) = parse_conflict(text);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(
+            context(&segs[0]),
+            ["<<<<<<< HEAD", "our", "=======", "their"]
+        );
+        assert_eq!(ours_label, "OURS");
+        assert_eq!(theirs_label, "THEIRS");
+    }
+
+    // ---- merge state integration (libgit2 only; no PATH git) ----
+
+    fn temp_repo(name: &str) -> (std::path::PathBuf, Repository) {
+        let dir = std::env::temp_dir().join(format!("gitgud_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test").unwrap();
+        (dir, repo)
+    }
+
+    /// Commits a change to f.txt (None = delete) on `refname` straight from a
+    /// tree, so the divergent branch exists without touching the workdir.
+    fn commit_on_ref(
+        repo: &Repository,
+        refname: &str,
+        parent: &git2::Commit<'_>,
+        content: Option<&str>,
+    ) -> Oid {
+        let mut tb = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
+        match content {
+            Some(c) => {
+                let blob = repo.blob(c.as_bytes()).unwrap();
+                tb.insert("f.txt", blob, 0o100644).unwrap();
+            }
+            None => {
+                tb.remove("f.txt").unwrap();
+            }
+        }
+        let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some(refname), &sig, &sig, "theirs", &tree, &[parent])
+            .unwrap()
+    }
+
+    /// Base commit, divergent edits on HEAD (ours) and refs/heads/other
+    /// (theirs), then a libgit2 merge that leaves the repo conflicted.
+    /// Returns the other branch's tip (the future MERGE_HEAD).
+    fn make_conflict(
+        name: &str,
+        ours: Option<&str>,
+        theirs: Option<&str>,
+    ) -> (std::path::PathBuf, Repository, Oid) {
+        let (dir, repo) = temp_repo(name);
+        fs::write(dir.join("f.txt"), "a\nshared\nb\n").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "base").unwrap();
+        // Scoped: Commit/AnnotatedCommit borrow `repo`, which is moved out.
+        let their_oid = {
+            let base_commit = repo.head().unwrap().peel_to_commit().unwrap();
+            commit_on_ref(&repo, "refs/heads/other", &base_commit, theirs)
+        };
+
+        match ours {
+            Some(c) => fs::write(dir.join("f.txt"), c).unwrap(),
+            None => fs::remove_file(dir.join("f.txt")).unwrap(),
+        }
+        stage(&repo, Some("f.txt")).unwrap();
+        commit(&repo, "ours").unwrap();
+
+        {
+            let annotated = repo.find_annotated_commit(their_oid).unwrap();
+            repo.merge(&[&annotated], None, None).unwrap();
+        }
+        (dir, repo, their_oid)
+    }
+
+    #[test]
+    fn merge_conflict_resolve_commit_flow() {
+        let (dir, repo, their_oid) = make_conflict(
+            "conflict_flow",
+            Some("a\nours\nb\n"),
+            Some("a\ntheirs\nb\n"),
+        );
+
+        let data = refresh(&repo).unwrap();
+        let merging = data.merging.expect("refresh detects the merge state");
+        assert_eq!(merging.head_short, their_oid.to_string()[..7]);
+        assert!(
+            data.unstaged
+                .iter()
+                .any(|f| f.path == "f.txt" && f.kind == ChangeKind::Conflicted)
+        );
+
+        match load_conflict(&repo, "f.txt").unwrap() {
+            ConflictFile::Text {
+                segments,
+                trailing_newline,
+                ..
+            } => {
+                assert!(trailing_newline);
+                let conflict = segments
+                    .iter()
+                    .find(|s| matches!(s, ConflictSegment::Conflict { .. }))
+                    .expect("one conflict block");
+                let (ours, theirs) = block(conflict);
+                assert_eq!(ours, ["ours"]);
+                assert_eq!(theirs, ["theirs"]);
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+
+        resolve(
+            &repo,
+            "f.txt",
+            &Resolution::Content("a\nresolved\nb\n".to_string()),
+        )
+        .unwrap();
+        let data = refresh(&repo).unwrap();
+        assert!(!data.unstaged.iter().any(|f| f.kind == ChangeKind::Conflicted));
+        assert!(
+            data.staged
+                .iter()
+                .any(|f| f.path == "f.txt" && f.kind == ChangeKind::Modified)
+        );
+
+        commit(&repo, "merge other").unwrap();
+        {
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            assert_eq!(head.parent_count(), 2);
+            assert_eq!(head.parent_id(1).unwrap(), their_oid);
+        }
+        assert_eq!(repo.state(), RepositoryState::Clean);
+        assert!(refresh(&repo).unwrap().merging.is_none());
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_by_us_resolve_theirs_restores_file() {
+        let (dir, repo, _) = make_conflict("del_by_us", None, Some("a\ntheirs\nb\n"));
+
+        assert!(matches!(
+            load_conflict(&repo, "f.txt").unwrap(),
+            ConflictFile::DeletedByUs
+        ));
+
+        resolve(&repo, "f.txt", &Resolution::Theirs).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "a\ntheirs\nb\n"
+        );
+        assert!(!repo.index().unwrap().has_conflicts());
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_by_them_resolve_theirs_removes_file() {
+        let (dir, repo, _) = make_conflict("del_by_them", Some("a\nours\nb\n"), None);
+
+        assert!(matches!(
+            load_conflict(&repo, "f.txt").unwrap(),
+            ConflictFile::DeletedByThem
+        ));
+
+        resolve(&repo, "f.txt", &Resolution::Theirs).unwrap();
+        assert!(!dir.join("f.txt").exists());
+        let index = repo.index().unwrap();
+        assert!(!index.has_conflicts());
+        assert!(index.get_path(Path::new("f.txt"), 0).is_none());
 
         drop(repo);
         let _ = fs::remove_dir_all(&dir);
