@@ -105,13 +105,27 @@ pub enum Job {
         id: RepoId,
     },
     /// Pushes the current branch to origin via the CLI on its own thread.
+    /// First fetches and checks for divergence: if origin has commits the
+    /// local branch lacks *and* the local branch has its own, the worker
+    /// replies [`Update::Diverged`] instead so the UI can ask the user how to
+    /// reconcile (the push would otherwise be rejected as non-fast-forward).
     Push {
         id: RepoId,
     },
-    /// Fast-forwards the current branch from its upstream via the CLI on its
-    /// own thread. Refuses (with git's error) if the branch has diverged.
+    /// Pulls the current branch from its upstream via the CLI on its own
+    /// thread. Fast-forwards when it cleanly can; on divergence replies
+    /// [`Update::Diverged`] so the user chooses merge vs rebase rather than
+    /// the app silently picking one.
     Pull {
         id: RepoId,
+    },
+    /// Reconciles a diverged branch with the user's chosen strategy (after a
+    /// [`Update::Diverged`] prompt), then pushes when the flow began at the
+    /// PUSH button. Network op, runs on its own thread.
+    Integrate {
+        id: RepoId,
+        strategy: SyncStrategy,
+        push_after: bool,
     },
 }
 
@@ -151,6 +165,35 @@ pub enum Update {
         kind: ActionKind,
         result: Result<String, String>,
     },
+    /// A push or pull found the current branch diverged from its upstream:
+    /// each side has commits the other lacks. The UI prompts the user to pick
+    /// a reconcile strategy, then sends [`Job::Integrate`]. `kind` records
+    /// which button opened the flow (and so whether a push should follow).
+    Diverged {
+        id: RepoId,
+        kind: SyncKind,
+        /// Commits the upstream has that the local branch lacks.
+        behind: usize,
+        /// Commits the local branch has that the upstream lacks.
+        ahead: usize,
+    },
+}
+
+/// How to reconcile a diverged branch, chosen by the user in the sync dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStrategy {
+    /// `git pull --no-rebase`: join the two histories with a merge commit.
+    Merge,
+    /// `git pull --rebase`: replay local commits on top of the upstream.
+    Rebase,
+}
+
+/// Which button opened the sync flow. Decides whether a push follows the
+/// reconcile and tailors the dialog copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncKind {
+    Push,
+    Pull,
 }
 
 /// How to settle one conflicted file. `Ours`/`Theirs` take a whole side from
