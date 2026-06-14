@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use git2::Repository;
 
-use super::{ActionKind, Job, RepoId, Update, ops};
+use super::{ActionKind, Job, RepoId, SyncKind, Update, ops};
 
 /// The UI-side handle to the worker: a job sender and an update receiver.
 /// Dropping it closes the job channel, which is the worker's shutdown signal.
@@ -224,18 +224,14 @@ fn run_job(
         }
         Job::Push { id } => {
             // Same off-thread treatment as fetch: a network push must not
-            // block local jobs queued behind it.
+            // block local jobs queued behind it. The probe either completes
+            // the push or reports divergence for the UI to resolve.
             let (_, workdir) = repos.get(&id)?;
             let workdir = workdir.clone();
             let tx = upd_tx.clone();
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                let result = ops::push(&workdir);
-                let _ = tx.send(Update::Acted {
-                    id,
-                    kind: ActionKind::Push,
-                    result,
-                });
+                let _ = tx.send(sync_update(id, SyncKind::Push, ops::push(&workdir)));
                 ctx.request_repaint();
             });
             None
@@ -247,15 +243,54 @@ fn run_job(
             let tx = upd_tx.clone();
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                let result = ops::pull(&workdir);
-                let _ = tx.send(Update::Acted {
-                    id,
-                    kind: ActionKind::Pull,
-                    result,
-                });
+                let _ = tx.send(sync_update(id, SyncKind::Pull, ops::pull(&workdir)));
                 ctx.request_repaint();
             });
             None
         }
+        Job::Integrate {
+            id,
+            strategy,
+            push_after,
+        } => {
+            // Network, same off-thread treatment. The reply is keyed as the
+            // op the flow began as so the UI re-loads history either way.
+            let (_, workdir) = repos.get(&id)?;
+            let workdir = workdir.clone();
+            let tx = upd_tx.clone();
+            let ctx = egui_ctx.clone();
+            std::thread::spawn(move || {
+                let result = ops::integrate(&workdir, strategy, push_after);
+                let kind = if push_after {
+                    ActionKind::Push
+                } else {
+                    ActionKind::Pull
+                };
+                let _ = tx.send(Update::Acted { id, kind, result });
+                ctx.request_repaint();
+            });
+            None
+        }
+    }
+}
+
+/// Maps a push/pull probe's [`SyncOutcome`] onto the right `Update`: a
+/// finished op becomes `Acted`, a divergence becomes the `Diverged` prompt.
+fn sync_update(id: RepoId, kind: SyncKind, outcome: ops::SyncOutcome) -> Update {
+    match outcome {
+        ops::SyncOutcome::Completed(result) => Update::Acted {
+            id,
+            kind: match kind {
+                SyncKind::Push => ActionKind::Push,
+                SyncKind::Pull => ActionKind::Pull,
+            },
+            result,
+        },
+        ops::SyncOutcome::Diverged { behind, ahead } => Update::Diverged {
+            id,
+            kind,
+            behind,
+            ahead,
+        },
     }
 }

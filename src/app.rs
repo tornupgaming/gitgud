@@ -18,7 +18,7 @@ use notify::Watcher;
 use crate::git::worker::GitWorker;
 use crate::git::{
     ActionKind, BranchInfo, ChangeKind, CommitInfo, DiffData, DiffKey, FileChange, Job, MergeInfo,
-    RepoId, Update, graph::Graph,
+    RepoId, SyncKind, Update, graph::Graph,
 };
 use crate::theme::{self, ACCENT, BG1};
 use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
@@ -97,6 +97,10 @@ pub struct RepoTab {
     pub pending_discard: Option<Option<String>>,
     /// Branch creation awaiting a name; `Some` shows the new-branch dialog.
     pub pending_branch: Option<NewBranch>,
+    /// Set when a push/pull found the branch diverged from upstream; drives
+    /// the reconcile dialog (merge / rebase / cancel). The job only fires on
+    /// the user's choice -- the app never picks a strategy on its own.
+    pub pending_sync: Option<PendingSync>,
     /// Jobs sent but not yet answered; > 0 shows the busy indicators.
     pub in_flight: usize,
     /// Last action outcome for the status bar: (is_error, message).
@@ -138,6 +142,7 @@ impl RepoTab {
             pending_checkout: None,
             pending_discard: None,
             pending_branch: None,
+            pending_sync: None,
             in_flight: 0,
             log: None,
             loaded: false,
@@ -163,6 +168,16 @@ impl RepoTab {
             .iter()
             .any(|f| f.kind == ChangeKind::Conflicted)
     }
+}
+
+/// A diverged push/pull awaiting the user's reconcile choice. Carries which
+/// button opened the flow (so a push can follow the integrate) and the
+/// ahead/behind counts that fill the dialog copy.
+#[derive(Clone, Copy)]
+pub struct PendingSync {
+    pub kind: SyncKind,
+    pub behind: usize,
+    pub ahead: usize,
 }
 
 /// Top-level state: the worker handle plus all open tabs. Every job must go
@@ -497,6 +512,13 @@ impl GitGudApp {
                     }
                 }
             }
+            Update::Diverged {
+                kind, behind, ahead, ..
+            } => {
+                // The push/pull probe came back needing a decision: arm the
+                // reconcile dialog. The follow-up Integrate fires from there.
+                self.tabs[idx].pending_sync = Some(PendingSync { kind, behind, ahead });
+            }
         }
     }
 }
@@ -520,7 +542,8 @@ fn job_id(job: &Job) -> RepoId {
         | Job::ResolveConflict { id, .. }
         | Job::Fetch { id }
         | Job::Push { id }
-        | Job::Pull { id } => *id,
+        | Job::Pull { id }
+        | Job::Integrate { id, .. } => *id,
     }
 }
 
@@ -531,7 +554,8 @@ fn update_id(upd: &Update) -> RepoId {
         | Update::History { id, .. }
         | Update::Diff { id, .. }
         | Update::Conflict { id, .. }
-        | Update::Acted { id, .. } => *id,
+        | Update::Acted { id, .. }
+        | Update::Diverged { id, .. } => *id,
     }
 }
 
@@ -606,6 +630,7 @@ impl eframe::App for GitGudApp {
                 && t.pending_checkout.is_none()
                 && t.pending_discard.is_none()
                 && t.pending_branch.is_none()
+                && t.pending_sync.is_none()
                 && !t.pending_abort_merge
             {
                 if t.commit_file.is_some() {
@@ -713,6 +738,13 @@ impl eframe::App for GitGudApp {
                     Center::Conflict => ui::conflict::show(ui, tab, &mut jobs),
                     Center::Graph => ui::graph::show(ui, tab, &mut jobs),
                 });
+        }
+
+        // Reconcile dialog for a diverged push/pull. Lives here, not in a
+        // panel, because it belongs to no module -- it floats over the whole
+        // console once a probe reports divergence.
+        if let Some(t) = self.tabs.get_mut(self.active) {
+            ui::sync::show(ui, t, &mut jobs);
         }
 
         // CRT scanlines over the whole frame, then the outer HUD bezel:
