@@ -611,6 +611,26 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
 /// `git merge <branch>` via the CLI so the user's merge config, strategy,
 /// and hooks all apply. A conflicted merge returns `Ok` -- the repo is now
 /// legitimately in the merge state; only a merge that never started is `Err`.
+/// Inspects a merge/pull's combined output. Returns `Some(n)` — the count of
+/// conflicted files — when the run stopped on merge conflicts (a recoverable
+/// state, the repo is now mid-merge), or `None` when it didn't conflict.
+fn conflict_count(stdout: &str, stderr: &str) -> Option<usize> {
+    let conflicted = stdout.contains("CONFLICT")
+        || stderr.contains("CONFLICT")
+        || stdout.contains("Automatic merge failed")
+        || stderr.contains("Automatic merge failed");
+    if !conflicted {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter(|l| l.starts_with("CONFLICT"))
+            .count(),
+    )
+}
+
 pub fn merge(workdir: &Path, branch: &str) -> Result<String, String> {
     // Branch names reaching here come from libgit2's ref enumeration, which
     // forbids a leading '-'. Re-check so this value can never be parsed as a
@@ -632,16 +652,7 @@ pub fn merge(workdir: &Path, branch: &str) -> Result<String, String> {
     }
     // A conflicted merge exits nonzero but is a *successful* job: the repo is
     // now in the merge state and the follow-up Refresh surfaces the conflicts.
-    if stdout.contains("CONFLICT")
-        || stderr.contains("CONFLICT")
-        || stdout.contains("Automatic merge failed")
-        || stderr.contains("Automatic merge failed")
-    {
-        let n = stdout
-            .lines()
-            .chain(stderr.lines())
-            .filter(|l| l.starts_with("CONFLICT"))
-            .count();
+    if let Some(n) = conflict_count(&stdout, &stderr) {
         return Ok(match n {
             0 => "merge conflicts — resolve and commit".to_string(),
             n => format!("merge conflicts in {n} file(s) — resolve and commit"),
@@ -872,7 +883,21 @@ pub fn fetch(workdir: &Path) -> Result<String, String> {
 
 /// Pushes the current branch to origin via the CLI. Network op, same
 /// throwaway-thread treatment as [`fetch`].
+///
+/// Pulls first so commits another user has landed on origin are merged into
+/// the local branch before we push: git rejects a non-fast-forward push
+/// outright, so integrating those commits here is what lets the push land at
+/// all. If that merge stops on conflicts the repo is left mid-merge and the
+/// push is skipped — the returned status tells the user to resolve first.
 pub fn push(workdir: &Path) -> Result<String, String> {
+    // Only pull when the branch already tracks an upstream. A brand-new local
+    // branch has none, so there is nothing on origin to merge yet and a pull
+    // would just error; the push below records the upstream with -u instead.
+    if has_upstream(workdir) {
+        if let Some(status) = pull_before_push(workdir)? {
+            return Ok(status);
+        }
+    }
     // No refspec: git pushes the current branch per the user's `push.default`
     // (the default `simple` pushes HEAD to its upstream of the same name).
     // `--set-upstream` makes the very first push of a new branch also record
@@ -889,6 +914,51 @@ pub fn push(workdir: &Path) -> Result<String, String> {
         Some(line) => Ok(format!("push complete — {}", line.trim())),
         None => Ok("push complete".to_string()),
     }
+}
+
+/// True when the current branch tracks an upstream ref — i.e. it has been
+/// pushed before, or was checked out from a remote. Decides whether a
+/// pull-before-push has anything to merge.
+fn has_upstream(workdir: &Path) -> bool {
+    git_output(
+        workdir,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false)
+}
+
+/// Merges origin's commits into the current branch ahead of a push. Returns
+/// `Ok(None)` when the branch is reconciled and ready to push, or
+/// `Ok(Some(status))` when the merge stopped on conflicts and the caller must
+/// not push — the repo is left mid-merge for the user to resolve and commit.
+fn pull_before_push(workdir: &Path) -> Result<Option<String>, String> {
+    // --no-rebase: reconcile a diverged branch with a merge so the other
+    // user's commits are integrated (an ff-only pull would just fail, and a
+    // rebase would rewrite local commits). Repo-local pull.rebase is ignored.
+    let output = git_output(workdir, &["pull", "--no-rebase"])?;
+    if output.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    // A conflicted merge exits nonzero but leaves the repo in a valid merging
+    // state — surface it as a status, the same way the Merge job does.
+    if let Some(n) = conflict_count(&stdout, &stderr) {
+        return Ok(Some(match n {
+            0 => "pull conflicts — resolve and commit before pushing".to_string(),
+            n => format!("pull conflicts in {n} file(s) — resolve and commit before pushing"),
+        }));
+    }
+    // Genuine failure: network error, dirty worktree, detached HEAD, ...
+    let last = stderr
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .or_else(|| stdout.lines().rev().find(|l| !l.trim().is_empty()));
+    Err(last
+        .map(|l| l.trim().to_string())
+        .unwrap_or_else(|| "git pull before push failed".to_string()))
 }
 
 /// Fast-forward-only pull via the CLI; a diverged branch fails with git's
@@ -1291,5 +1361,33 @@ mod tests {
 
         drop(repo);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- conflict_count: drives both merge and pull-before-push status ----
+
+    #[test]
+    fn conflict_count_none_when_clean() {
+        // A fast-forward / up-to-date pull says neither "CONFLICT" nor
+        // "Automatic merge failed", so the push is free to proceed.
+        assert_eq!(conflict_count("Updating abc..def\nFast-forward\n", ""), None);
+        assert_eq!(conflict_count("Already up to date.\n", ""), None);
+    }
+
+    #[test]
+    fn conflict_count_tallies_conflicted_files() {
+        let stdout = "Auto-merging a.txt\nCONFLICT (content): Merge conflict in a.txt\n\
+                      CONFLICT (content): Merge conflict in b.txt\n";
+        let stderr = "Automatic merge failed; fix conflicts and then commit the result.\n";
+        assert_eq!(conflict_count(stdout, stderr), Some(2));
+    }
+
+    #[test]
+    fn conflict_count_some_zero_without_named_files() {
+        // "Automatic merge failed" with no per-file CONFLICT lines still marks
+        // a recoverable merge state — count just falls back to zero.
+        assert_eq!(
+            conflict_count("", "Automatic merge failed; fix conflicts.\n"),
+            Some(0)
+        );
     }
 }

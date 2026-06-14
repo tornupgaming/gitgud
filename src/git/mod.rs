@@ -104,7 +104,9 @@ pub enum Job {
     Fetch {
         id: RepoId,
     },
-    /// Pushes the current branch to origin via the CLI on its own thread.
+    /// Pushes the current branch to origin via the CLI on its own thread,
+    /// merging in any new origin commits with a pull first so the push isn't
+    /// rejected as non-fast-forward.
     Push {
         id: RepoId,
     },
