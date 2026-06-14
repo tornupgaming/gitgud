@@ -20,6 +20,7 @@ use git2::{
 use super::{
     BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey, DiffLine,
     FileChange, FileDiff, HistoryPage, LineKind, MergeInfo, RefreshData, RepoMeta, Resolution,
+    SyncStrategy,
 };
 
 /// Stop collecting diff lines past this point so a pathological diff
@@ -881,23 +882,146 @@ pub fn fetch(workdir: &Path) -> Result<String, String> {
     }
 }
 
+/// What a push/pull probe decided. `Completed` means the op ran (or failed)
+/// without a choice to make; `Diverged` means both sides hold commits the
+/// other lacks and only the user can pick how to reconcile.
+pub enum SyncOutcome {
+    Completed(Result<String, String>),
+    Diverged { behind: usize, ahead: usize },
+}
+
 /// Pushes the current branch to origin via the CLI. Network op, same
 /// throwaway-thread treatment as [`fetch`].
 ///
-/// Pulls first so commits another user has landed on origin are merged into
-/// the local branch before we push: git rejects a non-fast-forward push
-/// outright, so integrating those commits here is what lets the push land at
-/// all. If that merge stops on conflicts the repo is left mid-merge and the
-/// push is skipped — the returned status tells the user to resolve first.
-pub fn push(workdir: &Path) -> Result<String, String> {
-    // Only pull when the branch already tracks an upstream. A brand-new local
-    // branch has none, so there is nothing on origin to merge yet and a pull
-    // would just error; the push below records the upstream with -u instead.
-    if has_upstream(workdir) {
-        if let Some(status) = pull_before_push(workdir)? {
-            return Ok(status);
-        }
+/// Fetches first and inspects divergence so the push never silently fails (or
+/// silently merges): a branch that has diverged from its upstream returns
+/// [`SyncOutcome::Diverged`] for the UI to resolve, while a fast-forwardable
+/// branch just pushes.
+pub fn push(workdir: &Path) -> SyncOutcome {
+    // A brand-new branch has no upstream to diverge from -- push and let -u
+    // record the tracking ref.
+    if !has_upstream(workdir) {
+        return SyncOutcome::Completed(do_push(workdir));
     }
+    // Refresh our view of the upstream so the counts below reflect reality,
+    // not the last fetch -- origin may have moved since.
+    if let Err(e) = run_git(workdir, &["fetch"], "git fetch failed") {
+        return SyncOutcome::Completed(Err(e));
+    }
+    match divergence(workdir) {
+        Err(e) => SyncOutcome::Completed(Err(e)),
+        Ok((behind, ahead)) if behind > 0 && ahead > 0 => {
+            // Non-fast-forward push: the user decides merge vs rebase.
+            SyncOutcome::Diverged { behind, ahead }
+        }
+        Ok((behind, _)) if behind > 0 => {
+            // Strictly behind: nothing of ours to push, just catch up so the
+            // branch (and its ahead/behind readout) is current again.
+            SyncOutcome::Completed(fast_forward(workdir))
+        }
+        // Even with or ahead of the upstream: an ordinary fast-forward push.
+        Ok(_) => SyncOutcome::Completed(do_push(workdir)),
+    }
+}
+
+/// Pulls the current branch from its upstream via the CLI. Network op, same
+/// throwaway-thread treatment as [`fetch`].
+///
+/// Fast-forwards when it cleanly can; on divergence returns
+/// [`SyncOutcome::Diverged`] so the user chooses merge vs rebase rather than
+/// the app silently creating a merge commit.
+pub fn pull(workdir: &Path) -> SyncOutcome {
+    if !has_upstream(workdir) {
+        return SyncOutcome::Completed(Err("no upstream branch to pull from".to_string()));
+    }
+    if let Err(e) = run_git(workdir, &["fetch"], "git fetch failed") {
+        return SyncOutcome::Completed(Err(e));
+    }
+    match divergence(workdir) {
+        Err(e) => SyncOutcome::Completed(Err(e)),
+        Ok((behind, ahead)) if behind > 0 && ahead > 0 => {
+            SyncOutcome::Diverged { behind, ahead }
+        }
+        Ok((behind, _)) if behind > 0 => SyncOutcome::Completed(fast_forward(workdir)),
+        // Already up to date with (or ahead of) the upstream: nothing to pull.
+        Ok(_) => SyncOutcome::Completed(Ok("Already up to date.".to_string())),
+    }
+}
+
+/// Reconciles a diverged branch with the user's chosen strategy, then pushes
+/// when the flow began at the PUSH button. A conflict (or aborted rebase)
+/// stops short of pushing and reports the status so the user resolves first.
+pub fn integrate(workdir: &Path, strategy: SyncStrategy, push_after: bool) -> Result<String, String> {
+    let step = match strategy {
+        SyncStrategy::Merge => merge_upstream(workdir)?,
+        SyncStrategy::Rebase => rebase_upstream(workdir)?,
+    };
+    match step {
+        // The branch is reconciled. Push it on if this began as a push.
+        IntegrateStep::Done(status) => {
+            if push_after {
+                do_push(workdir)
+            } else {
+                Ok(status)
+            }
+        }
+        // Conflicts (merge) or an aborted rebase: never push a tree that isn't
+        // cleanly integrated -- report and let the user act.
+        IntegrateStep::Stopped(status) => Ok(status),
+    }
+}
+
+/// Result of one reconcile step, before any follow-up push.
+enum IntegrateStep {
+    /// Cleanly integrated; safe to push.
+    Done(String),
+    /// Stopped on conflicts (or was aborted); must not push.
+    Stopped(String),
+}
+
+/// `git pull --no-rebase`: fetches and merges the upstream, creating a merge
+/// commit on divergence. A conflict leaves the repo mid-merge -- the conflict
+/// UI drives the resolve-and-commit from there.
+fn merge_upstream(workdir: &Path) -> Result<IntegrateStep, String> {
+    let output = git_output(workdir, &["pull", "--no-rebase"])?;
+    if output.status.success() {
+        return Ok(IntegrateStep::Done("pull complete — merged origin".to_string()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if let Some(n) = conflict_count(&stdout, &stderr) {
+        return Ok(IntegrateStep::Stopped(match n {
+            0 => "merge conflicts — resolve and commit".to_string(),
+            n => format!("merge conflicts in {n} file(s) — resolve and commit"),
+        }));
+    }
+    Err(last_nonempty(&stderr, &stdout, "git pull failed"))
+}
+
+/// `git pull --rebase`: replays local commits on top of the upstream for a
+/// linear history. The app has no rebase-continue UI, so a conflict is aborted
+/// and reported -- the branch is left as it was and the user can pick merge.
+fn rebase_upstream(workdir: &Path) -> Result<IntegrateStep, String> {
+    let output = git_output(workdir, &["pull", "--rebase"])?;
+    if output.status.success() {
+        return Ok(IntegrateStep::Done(
+            "pull complete — rebased onto origin".to_string(),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if conflict_count(&stdout, &stderr).is_some() {
+        // Leave no half-finished rebase behind -- there is no UI to continue it.
+        let _ = git_output(workdir, &["rebase", "--abort"]);
+        return Ok(IntegrateStep::Stopped(
+            "rebase hit conflicts and was aborted — try merge instead".to_string(),
+        ));
+    }
+    Err(last_nonempty(&stderr, &stdout, "git pull --rebase failed"))
+}
+
+/// Pushes HEAD to origin, recording the upstream on a branch's first push.
+fn do_push(workdir: &Path) -> Result<String, String> {
     // No refspec: git pushes the current branch per the user's `push.default`
     // (the default `simple` pushes HEAD to its upstream of the same name).
     // `--set-upstream` makes the very first push of a new branch also record
@@ -916,9 +1040,36 @@ pub fn push(workdir: &Path) -> Result<String, String> {
     }
 }
 
+/// Fast-forwards HEAD onto its already-fetched upstream. Used when the local
+/// branch is strictly behind, so no merge commit is possible or needed.
+fn fast_forward(workdir: &Path) -> Result<String, String> {
+    let (stdout, _) = run_git(workdir, &["merge", "--ff-only", "@{u}"], "git merge failed")?;
+    let first_line = stdout.lines().find(|l| !l.trim().is_empty());
+    match first_line {
+        Some(line) if line.trim() == "Already up to date." => Ok(line.trim().to_string()),
+        Some(line) => Ok(format!("pull complete — {}", line.trim())),
+        None => Ok("pull complete".to_string()),
+    }
+}
+
+/// `(behind, ahead)`: commits the upstream has that HEAD lacks, and commits
+/// HEAD has that the upstream lacks. Only meaningful right after a fetch.
+fn divergence(workdir: &Path) -> Result<(usize, usize), String> {
+    // --left-right --count over `@{u}...HEAD` prints "<behind>\t<ahead>":
+    // left side is the upstream's exclusive commits, right side is ours.
+    let (stdout, _) = run_git(
+        workdir,
+        &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+        "git rev-list failed",
+    )?;
+    let mut nums = stdout.split_whitespace();
+    let behind = nums.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead = nums.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    Ok((behind, ahead))
+}
+
 /// True when the current branch tracks an upstream ref — i.e. it has been
-/// pushed before, or was checked out from a remote. Decides whether a
-/// pull-before-push has anything to merge.
+/// pushed before, or was checked out from a remote.
 fn has_upstream(workdir: &Path) -> bool {
     git_output(
         workdir,
@@ -928,52 +1079,16 @@ fn has_upstream(workdir: &Path) -> bool {
     .unwrap_or(false)
 }
 
-/// Merges origin's commits into the current branch ahead of a push. Returns
-/// `Ok(None)` when the branch is reconciled and ready to push, or
-/// `Ok(Some(status))` when the merge stopped on conflicts and the caller must
-/// not push — the repo is left mid-merge for the user to resolve and commit.
-fn pull_before_push(workdir: &Path) -> Result<Option<String>, String> {
-    // --no-rebase: reconcile a diverged branch with a merge so the other
-    // user's commits are integrated (an ff-only pull would just fail, and a
-    // rebase would rewrite local commits). Repo-local pull.rebase is ignored.
-    let output = git_output(workdir, &["pull", "--no-rebase"])?;
-    if output.status.success() {
-        return Ok(None);
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    // A conflicted merge exits nonzero but leaves the repo in a valid merging
-    // state — surface it as a status, the same way the Merge job does.
-    if let Some(n) = conflict_count(&stdout, &stderr) {
-        return Ok(Some(match n {
-            0 => "pull conflicts — resolve and commit before pushing".to_string(),
-            n => format!("pull conflicts in {n} file(s) — resolve and commit before pushing"),
-        }));
-    }
-    // Genuine failure: network error, dirty worktree, detached HEAD, ...
-    let last = stderr
+/// Last non-empty line of stderr, falling back to stdout, then `fallback`.
+/// Trims it for a one-line status-bar message.
+fn last_nonempty(stderr: &str, stdout: &str, fallback: &str) -> String {
+    stderr
         .lines()
         .rev()
         .find(|l| !l.trim().is_empty())
-        .or_else(|| stdout.lines().rev().find(|l| !l.trim().is_empty()));
-    Err(last
+        .or_else(|| stdout.lines().rev().find(|l| !l.trim().is_empty()))
         .map(|l| l.trim().to_string())
-        .unwrap_or_else(|| "git pull before push failed".to_string()))
-}
-
-/// Fast-forward-only pull via the CLI; a diverged branch fails with git's
-/// own error. Network op, same throwaway-thread treatment as [`fetch`].
-pub fn pull(workdir: &Path) -> Result<String, String> {
-    // --ff-only: a GUI must not silently create merge commits. A diverged
-    // branch surfaces git's own "Not possible to fast-forward" error instead.
-    let (stdout, _) = run_git(workdir, &["pull", "--ff-only"], "git pull failed")?;
-    // git reports the ref move ("Updating abc..def") on stdout's first line.
-    let first_line = stdout.lines().find(|l| !l.trim().is_empty());
-    match first_line {
-        Some(line) if line.trim() == "Already up to date." => Ok(line.trim().to_string()),
-        Some(line) => Ok(format!("pull complete — {}", line.trim())),
-        None => Ok("pull complete".to_string()),
-    }
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 /// Base git CLI invocation. The `-c` overrides neutralize repo-local config
