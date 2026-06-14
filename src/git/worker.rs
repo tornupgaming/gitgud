@@ -154,6 +154,20 @@ fn run_job(
                 result,
             })
         }
+        Job::CreateBranch {
+            id,
+            name,
+            start_point,
+            checkout,
+        } => {
+            let (repo, _) = repos.get(&id)?;
+            let result = ops::create_branch(repo, &name, &start_point, checkout);
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::CreateBranch,
+                result,
+            })
+        }
         Job::Merge { id, branch } => {
             // Local but shells out to the CLI so the user's merge config,
             // strategies, and hooks all apply.

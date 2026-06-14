@@ -77,6 +77,15 @@ pub enum Job {
         id: RepoId,
         branch: String,
     },
+    /// Create a new local branch `name` pointing at `start_point` (a commit
+    /// id or an existing branch name). With `checkout`, also switch HEAD to
+    /// it -- the "create branch from here" action on a commit or branch.
+    CreateBranch {
+        id: RepoId,
+        name: String,
+        start_point: String,
+        checkout: bool,
+    },
     /// Merge `branch` into HEAD via the git CLI (respects the user's merge
     /// config and hooks). A conflicted merge is a *successful* job: the repo
     /// enters the merge state and the conflicts surface through `Refresh`.
@@ -208,7 +217,8 @@ pub enum Resolution {
 
 /// Which job an `Acted` reply answers. The UI keys follow-up behaviour on
 /// this -- every kind triggers a `Refresh`, and history-changing kinds
-/// (commit, checkout, fetch, push, pull) also re-send `LoadHistory`.
+/// (commit, checkout, create-branch, fetch, push, pull) also re-send
+/// `LoadHistory`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Stage,
@@ -216,6 +226,7 @@ pub enum ActionKind {
     Discard,
     Commit,
     Checkout,
+    CreateBranch,
     Merge,
     AbortMerge,
     Resolve,

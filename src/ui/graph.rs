@@ -7,7 +7,7 @@ use eframe::egui::{
 };
 
 use super::{HudButton, module, rel_time, text_width, truncate_right};
-use crate::app::RepoTab;
+use crate::app::{NewBranch, RepoTab};
 use crate::git::graph::Edge;
 use crate::git::{DiffKey, Job};
 use crate::theme::{self, ACCENT, AMBER, BG0, BG3, DIM, LANES, PURPLE, TEXT};
@@ -35,6 +35,8 @@ enum Action {
     /// Clear selection + diffs; also fired by the WIP row to rebind the right
     /// panel to the working tree.
     Deselect,
+    /// Arm the new-branch dialog at a commit: (full id, short id for display).
+    CreateBranch(String, String),
     LoadMore,
 }
 
@@ -109,6 +111,9 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             tab.diff = None;
             tab.commit_diff = None;
             tab.commit_file = None;
+        }
+        Some(Action::CreateBranch(start_point, label)) => {
+            tab.pending_branch = Some(NewBranch::new(start_point, label));
         }
         None => {}
     }
@@ -280,6 +285,12 @@ fn commit_row(
             Action::Select(c.id.clone())
         });
     }
+    resp.context_menu(|ui| {
+        if ui.button("Create branch from here").clicked() {
+            *action = Some(Action::CreateBranch(c.id.clone(), c.short.clone()));
+            ui.close();
+        }
+    });
     resp.on_hover_text(format!("{}\n{} <{}>", c.id, c.author, c.email));
 }
 
