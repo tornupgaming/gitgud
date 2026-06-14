@@ -27,6 +27,29 @@ use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
 /// builds) collapse into one status scan per window instead of one per event.
 const AUTO_REFRESH_GAP: Duration = Duration::from_millis(800);
 
+/// A branch-creation awaiting a name, armed by "create branch from here" on a
+/// commit or branch. `start_point` is what the new branch points at (a commit
+/// id or branch name); `label` is its short display form; `name` is the
+/// in-progress text from the dialog.
+pub struct NewBranch {
+    pub start_point: String,
+    pub label: String,
+    pub name: String,
+    /// Set when the dialog opens so the name field grabs focus once.
+    pub needs_focus: bool,
+}
+
+impl NewBranch {
+    pub fn new(start_point: String, label: String) -> Self {
+        Self {
+            start_point,
+            label,
+            name: String::new(),
+            needs_focus: true,
+        }
+    }
+}
+
 /// UI-side state for one open repository: the worker's latest snapshots plus
 /// view state (selection, armed confirmations, in-flight accounting). The
 /// worker owns the matching `Repository`; this holds only plain data.
@@ -72,6 +95,8 @@ pub struct RepoTab {
     /// Discard awaiting confirmation: `Some(None)` = all unstaged changes,
     /// `Some(Some(path))` = one file. Same arm-then-confirm flow as checkout.
     pub pending_discard: Option<Option<String>>,
+    /// Branch creation awaiting a name; `Some` shows the new-branch dialog.
+    pub pending_branch: Option<NewBranch>,
     /// Jobs sent but not yet answered; > 0 shows the busy indicators.
     pub in_flight: usize,
     /// Last action outcome for the status bar: (is_error, message).
@@ -112,6 +137,7 @@ impl RepoTab {
             commit_msg: String::new(),
             pending_checkout: None,
             pending_discard: None,
+            pending_branch: None,
             in_flight: 0,
             log: None,
             loaded: false,
@@ -460,6 +486,7 @@ impl GitGudApp {
                         kind,
                         ActionKind::Commit
                             | ActionKind::Checkout
+                            | ActionKind::CreateBranch
                             | ActionKind::Merge
                             | ActionKind::AbortMerge
                             | ActionKind::Fetch
@@ -486,6 +513,7 @@ fn job_id(job: &Job) -> RepoId {
         | Job::Discard { id, .. }
         | Job::Commit { id, .. }
         | Job::Checkout { id, .. }
+        | Job::CreateBranch { id, .. }
         | Job::Merge { id, .. }
         | Job::AbortMerge { id }
         | Job::LoadConflict { id, .. }
@@ -577,6 +605,7 @@ impl eframe::App for GitGudApp {
             if esc
                 && t.pending_checkout.is_none()
                 && t.pending_discard.is_none()
+                && t.pending_branch.is_none()
                 && !t.pending_abort_merge
             {
                 if t.commit_file.is_some() {

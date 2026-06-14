@@ -608,6 +608,40 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
     Ok(format!("switched to {local}"))
 }
 
+/// Creates a local branch `name` at `start_point` (a commit id or an existing
+/// branch name) and, with `checkout`, switches HEAD to it. Refuses to clobber
+/// an existing branch (`force = false`); libgit2 rejects malformed names.
+pub fn create_branch(
+    repo: &Repository,
+    name: &str,
+    start_point: &str,
+    checkout: bool,
+) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("branch name is empty".to_string());
+    }
+    // `start_point` is supplied by the UI from the repo's own history/refs
+    // (a commit id or branch name), never free-form user text.
+    let commit = repo
+        .revparse_single(start_point)
+        .map_err(g)?
+        .peel_to_commit()
+        .map_err(g)?;
+    // `force = false`: refuse rather than move a branch that already exists.
+    // Invalid ref names are rejected here with libgit2's message.
+    repo.branch(name, &commit, false).map_err(g)?;
+    if checkout {
+        // The new branch points at `commit`, so check out that tree. `safe()`
+        // refuses to overwrite local modifications, same as `checkout`.
+        repo.checkout_tree(commit.as_object(), Some(CheckoutBuilder::new().safe()))
+            .map_err(g)?;
+        repo.set_head(&format!("refs/heads/{name}")).map_err(g)?;
+        return Ok(format!("created {name} and switched to it"));
+    }
+    Ok(format!("created branch {name}"))
+}
+
 /// `git merge <branch>` via the CLI so the user's merge config, strategy,
 /// and hooks all apply. A conflicted merge returns `Ok` -- the repo is now
 /// legitimately in the merge state; only a merge that never started is `Err`.
@@ -1038,6 +1072,49 @@ mod tests {
         assert!(workdir_path(&repo, "a/../../evil.txt").is_err());
         assert!(workdir_path(&repo, "C:/evil.txt").is_err());
         assert!(workdir_path(&repo, "/evil.txt").is_err());
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_branch_makes_ref_switches_and_guards() {
+        let dir = std::env::temp_dir().join(format!("gitgud_newbranch_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test").unwrap();
+
+        fs::write(dir.join("f.txt"), "hello\n").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "base").unwrap();
+        let base_id = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        // Default branch name varies with git config (master/main); compare
+        // against whatever HEAD is rather than hardcoding it.
+        let initial = head_label(&repo).unwrap().0;
+
+        // Create without switching: the ref exists, HEAD stays put.
+        create_branch(&repo, "feature", &base_id, false).unwrap();
+        assert!(repo.find_branch("feature", BranchType::Local).is_ok());
+        assert_eq!(head_label(&repo).unwrap().0, initial);
+
+        // Creating the same name again is refused (force = false).
+        assert!(create_branch(&repo, "feature", &base_id, false).is_err());
+
+        // Empty / whitespace names are refused before touching the repo.
+        assert!(create_branch(&repo, "   ", &base_id, false).is_err());
+
+        // Create + switch moves HEAD onto the new branch.
+        create_branch(&repo, "other", &base_id, true).unwrap();
+        assert_eq!(head_label(&repo).unwrap().0, "other");
 
         drop(repo);
         let _ = fs::remove_dir_all(&dir);
