@@ -136,6 +136,14 @@ pub enum Job {
         strategy: SyncStrategy,
         push_after: bool,
     },
+    /// `git submodule update --init --recursive` (`path: None` = all). Clones
+    /// or checks out submodules to their recorded commits. Network op (it may
+    /// fetch), so it runs on its own thread like fetch/push/pull.
+    UpdateSubmodules {
+        id: RepoId,
+        path: Option<String>,
+        init: bool,
+    },
 }
 
 /// A reply from the worker. `Result<_, String>` is Rust's standard
@@ -233,6 +241,7 @@ pub enum ActionKind {
     Fetch,
     Push,
     Pull,
+    UpdateSubmodules,
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +267,31 @@ pub struct RefreshData {
     /// `Some` while a merge is in progress (MERGE_HEAD exists), whether it
     /// was started here or in an external terminal.
     pub merging: Option<MergeInfo>,
+    /// Submodules registered in the repo, for the sidebar panel. Empty for
+    /// repos without submodules (the panel then hides itself).
+    pub submodules: Vec<SubmoduleInfo>,
+}
+
+/// One submodule's state for the SUBMODULES panel. Pointer changes (the parent
+/// recording a new submodule commit) surface separately as `ChangeKind::Submodule`
+/// rows in the working tree; this drives the overview and the open/update actions.
+#[derive(Debug, Clone)]
+pub struct SubmoduleInfo {
+    /// Repo-relative path, also the open target and the row label. Confined
+    /// to the worktree (no `..`/absolute components) before it reaches here.
+    pub path: String,
+    /// Short id of the submodule's checked-out HEAD, empty when uninitialized.
+    pub head_short: String,
+    /// The submodule directory is populated (checked out), not just registered.
+    pub initialized: bool,
+    /// Working tree or index inside the submodule is dirty (uncommitted work).
+    pub dirty: bool,
+    /// The submodule's HEAD moved past the commit the parent's index records
+    /// -- an unstaged pointer change waiting to be staged.
+    pub new_commits: bool,
+    /// The parent's index records a different submodule commit than its HEAD
+    /// -- a pointer change already staged.
+    pub staged: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +329,10 @@ pub enum ChangeKind {
     Typechange,
     Untracked,
     Conflicted,
+    /// A submodule gitlink whose recorded commit changed. Distinct from a file
+    /// so the UI can stage it but withhold discard (resetting a gitlink without
+    /// moving the submodule checkout is a footgun).
+    Submodule,
 }
 
 impl ChangeKind {
@@ -308,6 +346,7 @@ impl ChangeKind {
             ChangeKind::Typechange => 'T',
             ChangeKind::Untracked => '?',
             ChangeKind::Conflicted => '!',
+            ChangeKind::Submodule => 'S',
         }
     }
 }

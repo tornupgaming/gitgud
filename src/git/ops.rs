@@ -14,13 +14,13 @@ use std::process::Command;
 use git2::build::CheckoutBuilder;
 use git2::{
     BranchType, DiffOptions, ErrorCode, IndexAddOption, Oid, Repository, RepositoryState, Sort,
-    Status, StatusOptions,
+    Status, StatusOptions, SubmoduleIgnore, SubmoduleStatus,
 };
 
 use super::{
     BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey, DiffLine,
     FileChange, FileDiff, HistoryPage, LineKind, MergeInfo, RefreshData, RepoMeta, Resolution,
-    SyncStrategy,
+    SubmoduleInfo, SyncStrategy,
 };
 
 /// Stop collecting diff lines past this point so a pathological diff
@@ -141,6 +141,27 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
             unstaged.push(FileChange { path, kind });
         }
     }
+
+    // Submodules are excluded from the status walk above, so their gitlink
+    // changes are gathered here instead -- a staged pointer (parent index gitlink
+    // differs from HEAD) joins `staged`, an unstaged one (the submodule's own HEAD
+    // moved past the recorded commit) joins `unstaged`, both as Submodule rows.
+    let submodules = submodules(repo)?;
+    for sm in &submodules {
+        if sm.staged {
+            staged.push(FileChange {
+                path: sm.path.clone(),
+                kind: ChangeKind::Submodule,
+            });
+        }
+        if sm.new_commits {
+            unstaged.push(FileChange {
+                path: sm.path.clone(),
+                kind: ChangeKind::Submodule,
+            });
+        }
+    }
+
     staged.sort_by(|a, b| a.path.cmp(&b.path));
     unstaged.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -178,6 +199,68 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
         staged,
         unstaged,
         merging,
+        submodules,
+    })
+}
+
+/// Snapshots every submodule's state from its `SubmoduleStatus` flags. Paths
+/// that escape the worktree (a crafted `.gitmodules`) are dropped: they must
+/// not reach the open-as-tab join or the `git submodule update` path arg.
+fn submodules(repo: &Repository) -> Result<Vec<SubmoduleInfo>, String> {
+    let mut out = Vec::new();
+    for sm in repo.submodules().map_err(g)? {
+        let path = sm.path().to_string_lossy().into_owned();
+        if !is_confined(&path) {
+            continue;
+        }
+        let Ok(name) = sm.name() else {
+            continue; // non-utf8 name; submodule_status needs the name
+        };
+        // `Ignore::None` reports dirty work tree and untracked files inside the
+        // submodule; the config default would hide them.
+        let st = repo
+            .submodule_status(name, SubmoduleIgnore::None)
+            .map_err(g)?;
+        out.push(SubmoduleInfo {
+            path,
+            head_short: sm.workdir_id().map(short_id).unwrap_or_default(),
+            initialized: !st.contains(SubmoduleStatus::WD_UNINITIALIZED),
+            dirty: st.intersects(
+                SubmoduleStatus::WD_INDEX_MODIFIED
+                    | SubmoduleStatus::WD_WD_MODIFIED
+                    | SubmoduleStatus::WD_UNTRACKED,
+            ),
+            new_commits: st.contains(SubmoduleStatus::WD_MODIFIED),
+            staged: st.contains(SubmoduleStatus::INDEX_MODIFIED),
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+/// `git submodule update [--init] --recursive` (`path: None` = all). Network op
+/// run off the worker thread. The path comes from our own confined snapshot,
+/// but is re-validated here so a future caller can't slip a flag or an escape
+/// through to the CLI.
+pub fn update_submodules(workdir: &Path, path: Option<&str>, init: bool) -> Result<String, String> {
+    if let Some(p) = path
+        && (p.starts_with('-') || !is_confined(p))
+    {
+        return Err(format!("invalid submodule path: {p}"));
+    }
+    let mut args = vec!["submodule", "update"];
+    if init {
+        args.push("--init");
+    }
+    args.push("--recursive");
+    if let Some(p) = path {
+        args.push("--");
+        args.push(p);
+    }
+    run_git(workdir, &args, "git submodule update failed")?;
+    Ok(match path {
+        Some(p) => format!("submodule updated — {p}"),
+        None => "submodules updated".to_string(),
     })
 }
 
@@ -331,7 +414,13 @@ pub fn diff(repo: &Repository, key: &DiffKey) -> Result<DiffData, String> {
         // Conflicted files go through `load_conflict`, never the diff path.
         DiffKey::Conflict { .. } => return Err("conflicted file has no diff".to_string()),
     };
+    collect_diff(&diff)
+}
 
+/// Flattens a libgit2 `Diff` into the UI's `DiffData`, capping output at
+/// [`DIFF_LINE_CAP`]. Submodule (gitlink) deltas come through as the two
+/// `Subproject commit <id>` lines libgit2 emits for them.
+fn collect_diff(diff: &git2::Diff<'_>) -> Result<DiffData, String> {
     let state = RefCell::new(DiffState::default());
 
     let mut file_cb = |delta: git2::DiffDelta<'_>, _progress: f32| -> bool {
@@ -891,17 +980,24 @@ fn find_conflict(index: &git2::Index, path: &str) -> Result<git2::IndexConflict,
 /// would otherwise escape the worktree (an absolute right operand *replaces*
 /// the base) and `resolve()` writes/deletes at the result.
 fn workdir_path(repo: &Repository, path: &str) -> Result<std::path::PathBuf, String> {
-    use std::path::Component;
-    let confined = Path::new(path)
-        .components()
-        .all(|c| matches!(c, Component::Normal(_)));
-    if !confined {
+    if !is_confined(path) {
         return Err(format!("refusing path outside the worktree: {path}"));
     }
     Ok(repo
         .workdir()
         .ok_or("bare repositories are not supported")?
         .join(path))
+}
+
+/// True when every component of `path` is a plain name -- no `..` and no
+/// absolute root. Repo-controlled paths (index entries, `.gitmodules`) must
+/// pass this before they reach the filesystem or the git CLI, because `join`
+/// lets an absolute or `..` operand escape the worktree.
+fn is_confined(path: &str) -> bool {
+    use std::path::Component;
+    Path::new(path)
+        .components()
+        .all(|c| matches!(c, Component::Normal(_)))
 }
 
 /// `git fetch --all --prune` via the CLI. Network op -- the worker runs it
@@ -973,9 +1069,7 @@ pub fn pull(workdir: &Path) -> SyncOutcome {
     }
     match divergence(workdir) {
         Err(e) => SyncOutcome::Completed(Err(e)),
-        Ok((behind, ahead)) if behind > 0 && ahead > 0 => {
-            SyncOutcome::Diverged { behind, ahead }
-        }
+        Ok((behind, ahead)) if behind > 0 && ahead > 0 => SyncOutcome::Diverged { behind, ahead },
         Ok((behind, _)) if behind > 0 => SyncOutcome::Completed(fast_forward(workdir)),
         // Already up to date with (or ahead of) the upstream: nothing to pull.
         Ok(_) => SyncOutcome::Completed(Ok("Already up to date.".to_string())),
@@ -985,7 +1079,11 @@ pub fn pull(workdir: &Path) -> SyncOutcome {
 /// Reconciles a diverged branch with the user's chosen strategy, then pushes
 /// when the flow began at the PUSH button. A conflict (or aborted rebase)
 /// stops short of pushing and reports the status so the user resolves first.
-pub fn integrate(workdir: &Path, strategy: SyncStrategy, push_after: bool) -> Result<String, String> {
+pub fn integrate(
+    workdir: &Path,
+    strategy: SyncStrategy,
+    push_after: bool,
+) -> Result<String, String> {
     let step = match strategy {
         SyncStrategy::Merge => merge_upstream(workdir)?,
         SyncStrategy::Rebase => rebase_upstream(workdir)?,
@@ -1019,7 +1117,9 @@ enum IntegrateStep {
 fn merge_upstream(workdir: &Path) -> Result<IntegrateStep, String> {
     let output = git_output(workdir, &["pull", "--no-rebase"])?;
     if output.status.success() {
-        return Ok(IntegrateStep::Done("pull complete — merged origin".to_string()));
+        return Ok(IntegrateStep::Done(
+            "pull complete — merged origin".to_string(),
+        ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -1555,13 +1655,66 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // ---- submodule gitlink diff synthesis ----
+
+    #[test]
+    fn submodule_pointer_diff_shows_both_commits() {
+        let (dir, repo) = temp_repo("sub_ptr_diff");
+        // Two real commits to stand in as the old/new submodule pointers.
+        fs::write(dir.join("f.txt"), "x").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "c1").unwrap();
+        let a = repo.head().unwrap().peel_to_commit().unwrap().id();
+        fs::write(dir.join("f.txt"), "y").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "c2").unwrap();
+        let b = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+        // Two trees differing only by a gitlink "sub" pointing at A vs B; the
+        // 0o160000 filemode is what makes libgit2 report it as a submodule.
+        // Scoped so the tree/diff borrows of `repo` end before `drop(repo)`.
+        let data = {
+            let base = repo.head().unwrap().peel_to_tree().unwrap();
+            let tree = |oid| {
+                let mut tb = repo.treebuilder(Some(&base)).unwrap();
+                tb.insert("sub", oid, 0o160000).unwrap();
+                repo.find_tree(tb.write().unwrap()).unwrap()
+            };
+            let (t1, t2) = (tree(a), tree(b));
+            let d = repo.diff_tree_to_tree(Some(&t1), Some(&t2), None).unwrap();
+            collect_diff(&d).unwrap()
+        };
+        let sub = data
+            .files
+            .iter()
+            .find(|f| f.path == "sub")
+            .expect("gitlink delta");
+        assert_eq!((sub.adds, sub.dels), (1, 1));
+        assert!(
+            sub.lines
+                .iter()
+                .any(|l| l.kind == LineKind::Del && l.text == format!("Subproject commit {a}"))
+        );
+        assert!(
+            sub.lines
+                .iter()
+                .any(|l| l.kind == LineKind::Add && l.text == format!("Subproject commit {b}"))
+        );
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     // ---- conflict_count: drives both merge and pull-before-push status ----
 
     #[test]
     fn conflict_count_none_when_clean() {
         // A fast-forward / up-to-date pull says neither "CONFLICT" nor
         // "Automatic merge failed", so the push is free to proceed.
-        assert_eq!(conflict_count("Updating abc..def\nFast-forward\n", ""), None);
+        assert_eq!(
+            conflict_count("Updating abc..def\nFast-forward\n", ""),
+            None
+        );
         assert_eq!(conflict_count("Already up to date.\n", ""), None);
     }
 

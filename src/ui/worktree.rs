@@ -11,7 +11,7 @@ use super::diff::DiffView;
 use super::{HudButton, module, rel_time, sub_label, truncate_left};
 use crate::app::RepoTab;
 use crate::git::{ChangeKind, DiffKey, Job};
-use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, BRIGHT, DIM, GREEN, RED, TEXT};
+use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// Picks the column's mode off the current selection, then runs the discard
 /// and abort-merge confirm modals (they render whenever their tab state is
@@ -473,6 +473,7 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
             ChangeKind::Added | ChangeKind::Untracked => GREEN,
             ChangeKind::Deleted | ChangeKind::Conflicted => RED,
             ChangeKind::Modified => AMBER,
+            ChangeKind::Submodule => PURPLE,
             _ => DIM,
         };
         p.text(
@@ -486,9 +487,12 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
         // Unstaged rows carry two buttons (discard + stage), staged rows one.
         // Conflicted rows carry none: staging raw marker text or discarding
         // mid-merge is a footgun; resolution happens in the center view.
+        // Submodule rows carry only stage/unstage: discarding a gitlink without
+        // moving the submodule checkout would just re-stage on the next refresh.
+        let submodule = f.kind == ChangeKind::Submodule;
         let btn_count = if conflicted {
             0.0
-        } else if staged {
+        } else if staged || submodule {
             1.0
         } else {
             2.0
@@ -530,7 +534,7 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
             );
             toggle_clicked = btn.clicked();
 
-            if !staged {
+            if !staged && !submodule {
                 let x_rect = Rect::from_center_size(
                     pos2(btn_rect.left() - 4.0 - btn_w / 2.0, y),
                     vec2(btn_w, btn_w),
