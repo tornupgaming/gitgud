@@ -18,7 +18,7 @@ use notify::Watcher;
 use crate::git::worker::GitWorker;
 use crate::git::{
     ActionKind, BranchInfo, ChangeKind, CommitInfo, DiffData, DiffKey, FileChange, Job, MergeInfo,
-    RepoId, SyncKind, Update, graph::Graph,
+    RepoId, SubmoduleInfo, SyncKind, Update, graph::Graph,
 };
 use crate::theme::{self, ACCENT, BG1};
 use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
@@ -60,6 +60,8 @@ pub struct RepoTab {
     pub head: String,
     pub head_detached: bool,
     pub branches: Vec<BranchInfo>,
+    /// Submodules for the SUBMODULES panel; empty hides it.
+    pub submodules: Vec<SubmoduleInfo>,
     pub staged: Vec<FileChange>,
     pub unstaged: Vec<FileChange>,
     pub commits: Vec<CommitInfo>,
@@ -101,6 +103,9 @@ pub struct RepoTab {
     /// the reconcile dialog (merge / rebase / cancel). The job only fires on
     /// the user's choice -- the app never picks a strategy on its own.
     pub pending_sync: Option<PendingSync>,
+    /// Repo-relative path of a submodule the user asked to open as its own tab;
+    /// drained after layout (it needs `&mut self`, not the borrowed tab).
+    pub pending_open_submodule: Option<String>,
     /// Jobs sent but not yet answered; > 0 shows the busy indicators.
     pub in_flight: usize,
     /// Last action outcome for the status bar: (is_error, message).
@@ -126,6 +131,7 @@ impl RepoTab {
             head: String::new(),
             head_detached: false,
             branches: Vec::new(),
+            submodules: Vec::new(),
             staged: Vec::new(),
             unstaged: Vec::new(),
             commits: Vec::new(),
@@ -143,6 +149,7 @@ impl RepoTab {
             pending_discard: None,
             pending_branch: None,
             pending_sync: None,
+            pending_open_submodule: None,
             in_flight: 0,
             log: None,
             loaded: false,
@@ -373,6 +380,7 @@ impl GitGudApp {
                         t.head = d.head;
                         t.head_detached = d.head_detached;
                         t.branches = d.branches;
+                        t.submodules = d.submodules;
                         t.staged = d.staged;
                         t.unstaged = d.unstaged;
                         // Entering a merge: seed the commit box with git's
@@ -513,11 +521,18 @@ impl GitGudApp {
                 }
             }
             Update::Diverged {
-                kind, behind, ahead, ..
+                kind,
+                behind,
+                ahead,
+                ..
             } => {
                 // The push/pull probe came back needing a decision: arm the
                 // reconcile dialog. The follow-up Integrate fires from there.
-                self.tabs[idx].pending_sync = Some(PendingSync { kind, behind, ahead });
+                self.tabs[idx].pending_sync = Some(PendingSync {
+                    kind,
+                    behind,
+                    ahead,
+                });
             }
         }
     }
@@ -543,7 +558,8 @@ fn job_id(job: &Job) -> RepoId {
         | Job::Fetch { id }
         | Job::Push { id }
         | Job::Pull { id }
-        | Job::Integrate { id, .. } => *id,
+        | Job::Integrate { id, .. }
+        | Job::UpdateSubmodules { id, .. } => *id,
     }
 }
 
@@ -759,6 +775,19 @@ impl eframe::App for GitGudApp {
 
         for job in jobs {
             self.send(job);
+        }
+
+        // Opening a submodule as a tab needs `&mut self` (it pushes a tab), so
+        // it can't happen during layout while a tab is borrowed -- the panel
+        // armed it and we act on it here. The path is repo-relative and was
+        // confined worker-side before it ever reached the UI.
+        let open = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|t| t.pending_open_submodule.take());
+        if let Some(rel) = open {
+            let abs = self.tabs[self.active].path.join(rel);
+            self.open_repo(abs);
         }
     }
 }

@@ -248,6 +248,24 @@ fn run_job(
             });
             None
         }
+        Job::UpdateSubmodules { id, path, init } => {
+            // May fetch over the network (clone/checkout of nested submodules),
+            // so it gets the same throwaway-thread treatment as fetch/pull.
+            let (_, workdir) = repos.get(&id)?;
+            let workdir = workdir.clone();
+            let tx = upd_tx.clone();
+            let ctx = egui_ctx.clone();
+            std::thread::spawn(move || {
+                let result = ops::update_submodules(&workdir, path.as_deref(), init);
+                let _ = tx.send(Update::Acted {
+                    id,
+                    kind: ActionKind::UpdateSubmodules,
+                    result,
+                });
+                ctx.request_repaint();
+            });
+            None
+        }
         Job::Integrate {
             id,
             strategy,

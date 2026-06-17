@@ -1,11 +1,11 @@
 //! Left "ops" column: the BRANCHES module and its checkout confirm flow.
 
 use eframe::egui::{
-    Align, Align2, CornerRadius, Frame, Id, Key, Layout, Margin, Modal, RichText, ScrollArea,
-    Sense, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
+    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Key, Layout, Margin, Modal, Panel,
+    RichText, ScrollArea, Sense, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
-use super::{HudButton, module};
+use super::{HudButton, module, submodules};
 use crate::app::{NewBranch, RepoTab};
 use crate::git::Job;
 use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, GREEN, PURPLE, RED, TEXT};
@@ -21,6 +21,32 @@ enum BranchAction {
 /// click checks out directly -- everything routes through the arm-then-confirm
 /// flow below.
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    // With submodules, SUBMODULES takes a resizable strip at the bottom and
+    // BRANCHES fills the rest; without, BRANCHES owns the whole column.
+    if !tab.submodules.is_empty() {
+        Panel::bottom("submodules_panel")
+            .resizable(true)
+            .default_size(180.0)
+            .frame(Frame::new().inner_margin(Margin {
+                left: 0,
+                right: 0,
+                top: 8,
+                bottom: 0,
+            }))
+            .show_inside(ui, |ui| submodules::show(ui, tab, jobs));
+        CentralPanel::default()
+            .frame(Frame::new())
+            .show_inside(ui, |ui| branches_module(ui, tab));
+    } else {
+        branches_module(ui, tab);
+    }
+    confirm_checkout(ui, tab, jobs);
+    confirm_new_branch(ui, tab, jobs);
+}
+
+/// The BRANCHES module proper. A click only *arms* an action; the job waits
+/// for confirmation in the modals run by `show`.
+fn branches_module(ui: &mut Ui, tab: &mut RepoTab) {
     let readout = format!("{:02}", tab.branches.len());
     let action = module(ui, None, "BRANCHES", &readout, |ui| {
         ScrollArea::vertical()
@@ -29,7 +55,6 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             .show(ui, |ui| branches(ui, tab))
             .inner
     });
-    // A click only *arms* an action; the job waits for confirmation.
     match action {
         Some(BranchAction::Checkout(name)) => tab.pending_checkout = Some(name),
         Some(BranchAction::CreateFrom { start_point, label }) => {
@@ -37,8 +62,6 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         }
         None => {}
     }
-    confirm_checkout(ui, tab, jobs);
-    confirm_new_branch(ui, tab, jobs);
 }
 
 /// Modal shown while a branch action is pending: switch to the armed branch

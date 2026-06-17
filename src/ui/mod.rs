@@ -6,6 +6,7 @@ pub mod graph;
 mod highlight;
 pub mod shell;
 pub mod sidebar;
+pub mod submodules;
 pub mod sync;
 pub mod widgets;
 pub mod worktree;
