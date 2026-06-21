@@ -6,6 +6,7 @@
 //! panel layout can't send directly (the active tab is borrowed mutably),
 //! so they collect into a frame-local `Vec<Job>` flushed after layout.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +61,11 @@ pub struct RepoTab {
     pub head: String,
     pub head_detached: bool,
     pub branches: Vec<BranchInfo>,
+    /// Branch-tree folders the user has collapsed, keyed by full folder path
+    /// (`feature`, `origin/feature`). Absent = expanded, so the default-open
+    /// behaviour needs no seeding and survives refreshes (which replace
+    /// `branches` but not this).
+    pub collapsed_folders: HashSet<String>,
     /// Submodules for the SUBMODULES panel; empty hides it.
     pub submodules: Vec<SubmoduleInfo>,
     pub staged: Vec<FileChange>,
@@ -131,6 +137,7 @@ impl RepoTab {
             head: String::new(),
             head_detached: false,
             branches: Vec::new(),
+            collapsed_folders: HashSet::new(),
             submodules: Vec::new(),
             staged: Vec::new(),
             unstaged: Vec::new(),

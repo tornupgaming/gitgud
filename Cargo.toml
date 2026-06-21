@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-eframe = { version = "0.34.3", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
+eframe = { version = "0.34.3", default-features = false, features = ["glow", "default_fonts"] }
 # libgit2 bindings. default-features off drops ssh/https network stacks --
 # we only do local reads/writes through libgit2; `fetch` shells out to the
 # git CLI so the user's existing credential helpers keep working.
