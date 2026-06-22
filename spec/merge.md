@@ -2,64 +2,58 @@
 
 ## Currently
 
-The user double clicks a branch in the branches panel to open a dialog that asks the user whether to merge or checkout the branch. Merge will always merge the selected branch into the currently checked out branch.
+The user double clicks a branch in the branches panel to open a dialog that asks whether to merge or checkout the branch. Merge always merges the selected branch into the currently checked out branch.
 
 ## Proposed changes
 
+Split the two actions apart. Double-click becomes pure checkout; merge moves to the right-click context menu and gains a direction choice. The combined "switch or merge or cancel" dialog is discarded.
+
+Out of scope for this update (deliberately): predicting conflicts before merging, pulling a branch up to its upstream before merging, and auto-fetching a remote ref before merging. The merge uses the tip the user clicked. Conflicts are handled by the existing conflict-resolution flow once they occur.
+
 ### Checkout
 
-Double clicking a branch will now automatically invoke the "checkout flow". It will no longer present the user with the option to merge a branch. The dialog that previously gave the user the option to switch branch or merge or cancel can be discarded.
+Double-clicking a branch invokes the **Checkout Flow**. It no longer offers to merge.
 
-#### New Flow: Checkout Flow
+#### Checkout Flow
 
-- A check is made for uncomitted changes. If there are any, the user is presented with a warning and the flow exits without continuing.
-  - The user must commit their changes in the existing commit flow.
-- The selected branch is now checked out.
-- If there are no uncommitted changes, the checkout happens without confirmation.
+Preconditions, checked in order; the first failure shows a warning Modal and exits the flow:
+
+1. **Uncommitted changes.** If the working tree has uncommitted changes (staged, unstaged, or dirty submodules — per `context.md`), warn and exit. The user must commit them via the existing commit flow first.
+2. **Merge in progress.** If a merge is already in progress, warn ("finish or abort the current merge first") and exit.
+
+If both pass, the selected branch is checked out without further confirmation.
+
+Double-clicking the currently checked-out branch is a no-op.
 
 #### Remote branches
 
-- Double-clicking a remote-tracking branch (e.g. `origin/feature`) must not detach HEAD.
-  - If no local branch of that name exists, a local branch is created tracking the remote (`git checkout -b feature --track origin/feature`) and checked out.
-  - If a local branch of that name already exists, that local branch is checked out.
-- The uncommitted-changes check above still applies.
+Double-clicking a remote-tracking branch (e.g. `origin/feature`) must not detach HEAD:
+
+- If no local branch of that name exists, create one tracking the remote (`git checkout -b feature --track origin/feature`) and check it out.
+- If a local branch of that name exists, check that one out.
+- The preconditions above still apply.
 
 ### Merging
 
-When a user right-clicks a branch that is not currently checked out, the right-click context menu will now give the user the option to merge the branch. Clicking merge will invoke the "merge branch flow". The option will appear below the "Create branch from here" option.
-The right-click command for merge should have an icon on the right to show that it opens a modal and does not perform an immediate operation.
+Right-clicking a branch that is **not** the currently checked-out branch adds a **Merge** item to the context menu, below "Create branch from here". It opens the merge Modal (it does not act immediately) — mark it with the icon used elsewhere for "opens a modal".
 
+#### Merge Branch Flow
 
-#### New Flow: Merge Branch Flow
+Preconditions, checked in order; the first failure shows a warning Modal and exits:
 
-- A check is made for uncomitted changes. If there are any, the user is presented with a warning and the flow exits without continuing.
-- A check is made for whether HEAD is in a detached state. If so, the user is presented with a dialog to alert them of this with no option given to resolve this. The flow exits here and does not allow further flows to continue.
-- The user is presented with the choice of:
-  - merging the selected branch into the currently checked out branch
-    - simple merge into the current branch
-  - merging the currently checked out branch into the selected branch
-    - checkout selected branch -> merge previous branch into current branch -> stay in current branch
-- The user is presented with a checkbox to auto-commit the merge if it's clean
-  - The checkbox is enabled by default
-- Both choices are checked for eligability first.
-  - Will there be merge conflicts?
-    - Warning to the user on the files that contain conflicts. This is just a heads-up to let them know before they enter into a conflict.
+1. **Uncommitted changes.** Same check as the Checkout Flow.
+2. **Detached HEAD.** If HEAD is detached, alert the user with no resolution offered, and exit. (Merging requires a branch to merge into / advance.)
+
+If both pass, the Modal offers a direction:
+
+- **Merge selected into current** — merge the selected branch into the currently checked-out branch. Simple `git merge <selected>`; HEAD does not move.
+- **Merge current into selected** — check out the selected branch, merge the previous branch into it, and finish on the **selected** branch (now advanced). The Checkout-Flow preconditions already guarantee a clean switch.
+
+A clean merge commits automatically (git's default). On conflict, the flow hands off to the existing conflict-resolution flow: the repo enters the in-progress merge state, conflicted files surface in the worktree, and the user resolves them there or aborts the merge. For "merge current into selected", an abort restores the original branch.
 
 #### Remote branches
 
 A remote-tracking branch (e.g. `origin/feature`) is a valid merge source. Merging it never requires a checkout and never detaches HEAD.
 
-- Only one direction is offered for a remote branch: merge the remote branch into the currently checked out branch. The "merge currently checked out branch into the selected branch" option is hidden — you cannot merge into a remote ref.
-  - The two-direction choice and its sub-steps above therefore apply only to local branches.
-- "Latest commit" guarantee: before merging a remote branch, an automatic fetch of that ref runs first, so the merge uses the branch's true tip rather than the last-fetched cache.
-  - If the fetch fails (e.g. offline), fall back to merging the last-fetched tip and warn the user it may be stale.
-
-#### Pull latest (local branches with an upstream)
-
-When the selected *local* branch has upstream changes available, the merge modal shows a checkbox to pull those latest upstream changes before merging.
-
-- The checkbox is disabled (unchecked) by default; the default merge uses the branch's current local tip.
-- When checked, the selected branch is brought up to its upstream's latest before the merge, so the merge includes the latest commits.
-- The checkbox only appears when the selected branch's upstream actually has changes available. Local branches with no upstream, or already up to date, do not show it.
-
-We do not silently retarget a local branch to its upstream: with the checkbox unchecked, "merge `feature`" always means the local tip the user clicked. The remote-tracking row remains available for merging the remote tip directly.
+- Only one direction is offered: **merge the remote branch into the currently checked-out branch.** "Merge current into selected" is hidden — you cannot merge into a remote ref, and the two-direction choice therefore applies only to local branches.
+- The merge uses the last-fetched tip of the remote-tracking ref. (Auto-fetching the latest first is out of scope; the user can fetch via the existing flow if they want the newest tip.)

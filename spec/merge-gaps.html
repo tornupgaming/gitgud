@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Merge Spec — Gap Analysis</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #111923;
+    --panel-2: #0e151d;
+    --line: #1d2c3a;
+    --ink: #cfe2ef;
+    --muted: #7f94a5;
+    --accent: #41e0c8;
+    --accent-dim: #2a8a7d;
+    --warn: #ffb454;
+    --bad: #ff5d6c;
+    --good: #5fd07a;
+    --chip: #16222e;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.6 "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 40px 24px 120px; }
+
+  header {
+    border: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+    padding: 28px 32px;
+    position: relative;
+    clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+  }
+  header h1 {
+    margin: 0 0 6px;
+    font-size: 26px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #eaf6ff;
+  }
+  header .sub { color: var(--muted); font-size: 13px; letter-spacing: 1px; }
+  header .accentbar {
+    height: 3px; width: 70px; background: var(--accent);
+    margin-top: 16px; box-shadow: 0 0 12px var(--accent-dim);
+  }
+
+  h2.section {
+    margin: 48px 0 18px;
+    font-size: 13px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--accent);
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 8px;
+  }
+
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 0;
+  }
+  .chip {
+    font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+    background: var(--chip); border: 1px solid var(--line);
+    padding: 5px 10px; color: var(--muted);
+  }
+
+  .toc { margin: 24px 0 0; padding: 0; list-style: none; }
+  .toc li { padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .toc a { color: var(--ink); text-decoration: none; display: flex; gap: 12px; align-items: baseline; }
+  .toc a:hover { color: var(--accent); }
+  .toc .num { color: var(--accent-dim); font-variant-numeric: tabular-nums; min-width: 28px; }
+  .toc .sev { margin-left: auto; }
+
+  .card {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    margin: 18px 0;
+    clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  }
+  .card > .head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .card > .head .id {
+    font-variant-numeric: tabular-nums; color: var(--accent);
+    font-weight: 700; letter-spacing: 1px; font-size: 13px;
+  }
+  .card > .head .title { font-size: 16px; color: #eaf6ff; }
+  .card > .body { padding: 18px 20px; }
+  .card .label {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--muted); margin: 16px 0 6px;
+  }
+  .card .label:first-child { margin-top: 0; }
+  .card p { margin: 6px 0; }
+  .card .fix { border-left: 2px solid var(--accent-dim); padding-left: 14px; }
+
+  .sev-tag {
+    margin-left: auto; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+    padding: 4px 9px; border: 1px solid; white-space: nowrap;
+  }
+  .sev-block { color: var(--bad); border-color: var(--bad); }
+  .sev-gap   { color: var(--warn); border-color: var(--warn); }
+  .sev-minor { color: var(--muted); border-color: var(--line); }
+
+  code {
+    background: #0a1118; border: 1px solid var(--line);
+    padding: 1px 6px; font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 13px; color: #b8e6dd;
+  }
+  .ref { color: var(--muted); font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+  blockquote {
+    margin: 8px 0; padding: 8px 14px; border-left: 3px solid var(--line);
+    background: var(--panel-2); color: var(--muted); font-style: italic;
+  }
+  ul.tight { margin: 6px 0; padding-left: 20px; }
+  ul.tight li { margin: 4px 0; }
+
+  .q-card .body ol { margin: 0; padding-left: 22px; }
+  .q-card .body ol li { margin: 10px 0; }
+
+  footer { margin-top: 60px; color: var(--muted); font-size: 12px; text-align: center; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Merge Spec — Gap Analysis</h1>
+    <div class="sub">Review of <code style="background:none;border:none;color:var(--accent);padding:0">spec/merge.md</code> against the gitgud codebase &amp; <code style="background:none;border:none;color:var(--accent);padding:0">context.md</code> glossary</div>
+    <div class="accentbar"></div>
+    <div class="meta">
+      <span class="chip">Branch: add-submodule-support</span>
+      <span class="chip">3 Blockers</span>
+      <span class="chip">5 Gaps</span>
+      <span class="chip">4 Minor</span>
+    </div>
+  </header>
+
+  <h2 class="section">Index</h2>
+  <ul class="toc">
+    <li><a href="#i1"><span class="num">B1</span><span>"Merge current into selected" end-state is self-contradictory</span><span class="sev sev-tag sev-block">Blocker</span></a></li>
+    <li><a href="#i2"><span class="num">B2</span><span>"Auto-commit if clean" doesn't map to git's defaults</span><span class="sev sev-tag sev-block">Blocker</span></a></li>
+    <li><a href="#i3"><span class="num">B3</span><span>"Uncommitted changes" — definition conflicts with code &amp; glossary</span><span class="sev sev-tag sev-block">Blocker</span></a></li>
+    <li><a href="#i4"><span class="num">G1</span><span>Conflict pre-check mechanism &amp; post-merge resolution path</span><span class="sev sev-tag sev-gap">Gap</span></a></li>
+    <li><a href="#i5"><span class="num">G2</span><span>"Pull latest" for a non-checked-out, diverged local branch</span><span class="sev sev-tag sev-gap">Gap</span></a></li>
+    <li><a href="#i6"><span class="num">G3</span><span>Async eligibility checks — modal loading state undefined</span><span class="sev sev-tag sev-gap">Gap</span></a></li>
+    <li><a href="#i7"><span class="num">G4</span><span>Worker contract: <code>Job::Merge</code> can't carry the new options</span><span class="sev sev-tag sev-gap">Gap</span></a></li>
+    <li><a href="#i8"><span class="num">G5</span><span>Merge-in-progress guard silently dropped</span><span class="sev sev-tag sev-gap">Gap</span></a></li>
+    <li><a href="#i9"><span class="num">M1</span><span>Submodule update after checkout/merge</span><span class="sev sev-tag sev-minor">Minor</span></a></li>
+    <li><a href="#i10"><span class="num">M2</span><span>No-op / fast-forward / already-merged messaging</span><span class="sev sev-tag sev-minor">Minor</span></a></li>
+    <li><a href="#i11"><span class="num">M3</span><span>Error messaging for non-conflict failures</span><span class="sev sev-tag sev-minor">Minor</span></a></li>
+    <li><a href="#i12"><span class="num">M4</span><span>Modal icon glyph &amp; double-click on current branch</span><span class="sev sev-tag sev-minor">Minor</span></a></li>
+  </ul>
+
+  <!-- ===================== BLOCKERS ===================== -->
+  <h2 class="section">Blockers — contradictions that stop implementation</h2>
+
+  <div class="card" id="i1">
+    <div class="head"><span class="id">B1</span><span class="title">"Merge current into selected" end-state is self-contradictory</span><span class="sev-tag sev-block">Blocker</span></div>
+    <div class="body">
+      <div class="label">Spec says <span class="ref">(merge.md:41)</span></div>
+      <blockquote>checkout selected branch → merge previous branch into current branch → stay in current branch</blockquote>
+      <div class="label">Issue</div>
+      <p>Once you check out the selected branch, "current branch" <em>is</em> the selected branch. So "merge previous into current" + "stay in current" lands you on the <strong>selected</strong> branch — but a user naturally expects to end where they started. Worse: if the merge conflicts mid-flow, you're now sitting on the selected branch with an in-progress conflicted merge, and the spec gives no recovery path.</p>
+      <div class="label">Proposed resolution</div>
+      <div class="fix">
+        <p>Define the final state explicitly. Recommended: <strong>finish on the selected branch</strong> (that's the branch the user chose to advance), and say so in the modal copy ("You will switch to <code>feature</code>").</p>
+        <p>On conflict during the reverse direction, drop into the existing conflict flow (<code>merging</code> state + <code>conflict.rs</code>) <em>on the selected branch</em>, and make <code>AbortMerge</code> restore the pre-flow branch. Spell out that a clean checkout of the selected branch is a precondition (covered by B3's uncommitted check).</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="i2">
+    <div class="head"><span class="id">B2</span><span class="title">"Auto-commit if clean" doesn't map cleanly to git's defaults</span><span class="sev-tag sev-block">Blocker</span></div>
+    <div class="body">
+      <div class="label">Spec says <span class="ref">(merge.md:42–43)</span></div>
+      <blockquote>The user is presented with a checkbox to auto-commit the merge if it's clean. The checkbox is enabled by default.</blockquote>
+      <div class="label">Issue</div>
+      <p><code>git merge</code> <em>already</em> auto-commits a clean non-fast-forward merge. So the checkbox's two states need an explicit mapping, and two cases are unaddressed:</p>
+      <ul class="tight">
+        <li><strong>Fast-forward merge</strong> — produces no merge commit at all, so "auto-commit" is meaningless. Hide/disable the checkbox? Undefined.</li>
+        <li><strong>Reverse direction (B1)</strong> — "clean → auto-commit" interacts with the extra checkout dance.</li>
+      </ul>
+      <div class="label">Proposed resolution</div>
+      <div class="fix">
+        <p>Map it concretely: <strong>checked</strong> → plain <code>git merge &lt;branch&gt;</code> (git commits the clean merge). <strong>Unchecked</strong> → <code>git merge --no-commit &lt;branch&gt;</code>, leaving the result staged for the user to review/commit via the existing commit box.</p>
+        <p>For a fast-forward, the checkbox is a no-op — keep it visible but note it only affects merge commits, or grey it out when the pre-check determines the merge will fast-forward.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="i3">
+    <div class="head"><span class="id">B3</span><span class="title">"Uncommitted changes" — definition conflicts with code &amp; glossary</span><span class="sev-tag sev-block">Blocker</span></div>
+    <div class="body">
+      <div class="label">Spec says <span class="ref">(merge.md:15, 35)</span></div>
+      <blockquote>A check is made for uncommitted changes. If there are any, the user is presented with a warning and the flow exits without continuing.</blockquote>
+      <div class="label">Issue — three separate conflicts</div>
+      <ul class="tight">
+        <li><strong>Behavior change vs. today.</strong> <code>ops::checkout</code> uses libgit2 <code>.safe()</code> <span class="ref">(ops.rs:695)</span>, which only refuses when changes would be <em>overwritten</em>; git otherwise carries clean changes across. The spec's "block on <em>any</em> uncommitted change" is a brand-new pre-flight check, not existing behavior.</li>
+        <li><strong>Definition gap vs. code.</strong> The existing dirty flag is <code>!staged.is_empty() || !unstaged.is_empty()</code> <span class="ref">(sidebar.rs)</span> — it ignores untracked files and dirty submodules.</li>
+        <li><strong>Glossary mismatch.</strong> <code>context.md</code> defines "uncommitted changes" as staged + unstaged <strong>+ dirty submodules</strong>, and its Checkout-Flow example says the flow prompts to <em>stash or discard</em>. The spec offers neither — only "go commit it yourself."</li>
+      </ul>
+      <div class="label">Proposed resolution</div>
+      <div class="fix">
+        <p>Adopt the glossary definition verbatim: the check fails on staged, unstaged, <strong>or dirty submodules</strong> (decide explicitly on untracked — recommend ignoring untracked, as git does, since they never block a checkout/merge unless overwritten).</p>
+        <p>Reconcile the exit options with the glossary: either (a) update <code>context.md</code> to drop the stash/discard wording so "commit only" is canonical, or (b) extend the spec to offer stash/discard. Given the submodule-heavy workflow, the dirty-submodule case is the one most likely to bite — make it a first-class part of the check.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== GAPS ===================== -->
+  <h2 class="section">Gaps — undefined behavior to pin down</h2>
+
+  <div class="card" id="i4">
+    <div class="head"><span class="id">G1</span><span class="title">Conflict pre-check mechanism &amp; post-merge resolution path</span><span class="sev-tag sev-gap">Gap</span></div>
+    <div class="body">
+      <div class="label">Spec says <span class="ref">(merge.md:44–46)</span></div>
+      <blockquote>Both choices are checked for eligibility first. Will there be merge conflicts? Warning to the user on the files that contain conflicts.</blockquote>
+      <div class="label">Issue</div>
+      <p>Two omissions: <strong>(1)</strong> <em>how</em> conflicts are predicted (a <code>git merge-tree</code> dry-run? a trial <code>--no-commit</code> merge then abort?), and <strong>(2)</strong> what happens when the user proceeds and conflicts <em>actually</em> occur. The codebase already has the full machinery — <code>merging</code> state, per-file resolution in <code>conflict.rs</code>, and <code>AbortMerge</code> — but the spec never says the merge flow hands off to it.</p>
+      <div class="label">Proposed resolution</div>
+      <div class="fix">
+        <p>Predict with <code>git merge-tree</code> (no working-tree mutation, fits the worker model and the "heads-up before you enter a conflict" intent). State that on an actual conflicted merge the flow transitions into the existing conflict-resolution flow (sets <code>merging</code>, surfaces <code>ChangeKind::Conflicted</code> files, routes to <code>conflict.rs</code>), and that <code>AbortMerge</code> is the escape hatch.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="i5">
+    <div class="head"><span class="id">G2</span><span class="title">"Pull latest" for a non-checked-out, diverged local branch</span><span class="sev-tag sev-gap">Gap</span></div>
+    <div class="body">
+      <div class="label">Spec says <span class="ref">(merge.md:57–63)</span></div>
+      <blockquote>When checked, the selected branch is brought up to its upstream's latest before the merge.</blockquote>
+      <div class="label">Issue</div>
+      <p>You can't <code>git pull</code> a branch you're not on. Bringing a non-current local branch to its upstream is a fetch + ref update, which only works if the branch <strong>fast-forwards</strong> to upstream. The spec ignores the diverged case — <code>ahead &gt; 0 &amp;&amp; behind &gt; 0</code> — where the local branch has its own commits <em>and</em> upstream has new ones. That's the most likely real scenario and there's no defined behavior.</p>
+      <div class="label">Proposed resolution</div>
+      <div class="fix">
+        <p>Scope "pull latest" to <strong>fast-forwardable only</strong> (<code>behind &gt; 0 &amp;&amp; ahead == 0</code>): fetch, then <code>git branch -f &lt;branch&gt; &lt;upstream&gt;</code>. When the branch has diverged (<code>ahead &gt; 0 &amp;&amp; behind &gt; 0</code>), do <strong>not</strong> offer the checkbox — show it disabled with a note ("local branch has diverged from upstream; merge its current tip or reconcile it first"). Never force-update a diverged branch silently — that's data loss. The snapshot already carries <code>BranchInfo.ahead/behind</code>, so the UI can decide without extra I/O.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="i6">
+    <div class="head"><span class="id">G3</span><span class="title">Async eligibility checks — modal loading state undefined</span><span class="sev-tag sev-gap">Gap</span></div>
+    <div class="body">
+      <div class="label">Issue</div>
+      <p>Three eligibility checks need I/O off the UI thread: the remote-merge fetch <span class="ref">(merge.md:54)</span>, the upstream-changes probe <span class="ref">(merge.md:63)</span>, and the conflict pre-check <span class="ref">(merge.md:45)</span>. The spec says checks happen "first" but never says what the modal shows while they run, or whether the user can act before they complete. With the worker/Job architecture these are all async round-trips.</p>
+      <div class="label">Proposed resolution</div>
+      <div class="fix">
+        <p>Define the modal's loading state: open immediately, show a spinner/"checking…" line, and keep the action buttons disabled until the probe <code>Update</code> returns. The conflict warning and the pull-latest checkbox populate in place when their results arrive. This matches the existing one-job-one-update contract.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="i7">
+    <div class="head"><span class="id">G4</span><span class="title">Worker contract: <code>Job::Merge</code> can't carry the new options</span><span class="sev-tag sev-gap">Gap</span></div>
+    <div class="body">
+      <div class="label">Issue</div>
+      <p>The existing variant is <code>Job::Merge { id, branch }</code> <span class="ref">(mod.rs:92)</span>. The new flow needs to express: <strong>direction</strong> (into-current vs. into-selected), <strong>auto-commit</strong>, <strong>pull-latest</strong>, and <strong>fetch-first</strong> (remote source). None fit today's variant. The spec doesn't have to design the enum, but it should acknowledge the merge job now carries direction + flags so the contract change is on the radar.</p>
+      <div class="label">Proposed resolution</div>
+      <div class="fix">
+        <p>Note in the spec that the merge job gains: <code>direction</code>, <code>auto_commit: bool</code>, <code>pull_latest: bool</code>, and a fetch-first step for remote sources. Add a separate conflict-probe job (or fold it into the modal's open sequence) so the pre-check has its own <code>Update</code>. Keep each job → exactly one <code>Update</code>, per the architecture invariant.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="i8">
+    <div class="head"><span class="id">G5</span><span class="title">Merge-in-progress guard silently dropped</span><span class="sev-tag sev-gap">Gap</span></div>
+    <div class="body">
+      <div class="label">Issue</div>
+      <p>Today the old dialog disables SWITCH/MERGE while <code>tab.merging.is_some()</code>. The new Checkout Flow only checks "uncommitted changes" — but a repo mid-merge isn't necessarily dirty in the staged/unstaged sense, so the guard is lost. Checking out (or starting a new merge) on top of an in-progress merge is undefined.</p>
+      <div class="label">Proposed resolution</div>
+      <div class="fix">
+        <p>Add an explicit precondition to both flows: if a merge is already in progress (<code>RepositoryState::Merge</code>), block with a warning to finish or abort it first. This preserves the guard the discarded dialog provided.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MINOR ===================== -->
+  <h2 class="section">Minor — smaller omissions</h2>
+
+  <div class="card" id="i9">
+    <div class="head"><span class="id">M1</span><span class="title">Submodule update after checkout/merge</span><span class="sev-tag sev-minor">Minor</span></div>
+    <div class="body">
+      <p>Checkout/merge can move submodule pointers, and there's an existing <code>UpdateSubmodules</code> job. The spec is silent on whether the flows auto-update submodules. Leaving them stale shows as "dirty submodules" (per the glossary), which would then <em>block the next flow</em> (B3) — a trap, given the submodule-heavy workflow.</p>
+      <div class="fix"><p><strong>Resolution:</strong> state whether checkout/merge auto-runs submodule update on success, or deliberately leaves it manual. Recommend auto-update after a successful checkout/merge to avoid the self-blocking trap.</p></div>
+    </div>
+  </div>
+
+  <div class="card" id="i10">
+    <div class="head"><span class="id">M2</span><span class="title">No-op / fast-forward / already-merged messaging</span><span class="sev-tag sev-minor">Minor</span></div>
+    <div class="body">
+      <p>Merging an already-up-to-date or already-merged branch ("Already up to date"), and the fast-forward case, have no defined messaging.</p>
+      <div class="fix"><p><strong>Resolution:</strong> surface git's "Already up to date" verbatim, and label fast-forward results distinctly from merge-commit results so the user understands no merge commit was created.</p></div>
+    </div>
+  </div>
+
+  <div class="card" id="i11">
+    <div class="head"><span class="id">M3</span><span class="title">Error messaging for non-conflict failures</span><span class="sev-tag sev-minor">Minor</span></div>
+    <div class="body">
+      <p>Non-conflict merge failures (e.g. the reverse-direction checkout failing) fall into the generic error path with no spec'd message.</p>
+      <div class="fix"><p><strong>Resolution:</strong> pass git's stderr through to the existing <code>Acted</code> error surface; no bespoke copy needed, but say that's the intent.</p></div>
+    </div>
+  </div>
+
+  <div class="card" id="i12">
+    <div class="head"><span class="id">M4</span><span class="title">Modal icon glyph &amp; double-click on current branch</span><span class="sev-tag sev-minor">Minor</span></div>
+    <div class="body">
+      <p>The "icon on the right to show it opens a modal" <span class="ref">(merge.md:30)</span> doesn't name a glyph — these live in <code>theme.rs</code>; don't hardcode. Separately, double-clicking the current/HEAD branch is presumably a no-op (today guarded by <code>!b.is_head</code>) but isn't stated.</p>
+      <div class="fix"><p><strong>Resolution:</strong> pick a glyph from <code>theme.rs</code> and reference it by name; confirm in the spec that double-clicking the HEAD branch is a no-op.</p></div>
+    </div>
+  </div>
+
+  <!-- ===================== QUESTIONS ===================== -->
+  <h2 class="section">Unresolved questions</h2>
+  <div class="card q-card">
+    <div class="body">
+      <ol>
+        <li>Reverse-direction merge (B1): finish on the selected branch or switch back to the original? What happens on conflict mid-flow?</li>
+        <li>Does "uncommitted changes" include untracked files and dirty submodules? (Glossary says yes to submodules.) Is the resolution "commit only," or also stash/discard as the glossary example implies?</li>
+        <li>"Pull latest" when the local branch has <strong>diverged</strong> from upstream — refuse, force, or merge-first?</li>
+        <li>Does an in-progress merge block the Checkout Flow?</li>
+        <li>Should checkout/merge auto-run submodule update afterward?</li>
+        <li>Auto-commit checkbox: exact mapping to <code>git merge</code> / <code>--no-commit</code>, and behavior for fast-forward merges?</li>
+      </ol>
+    </div>
+  </div>
+
+  <footer>gitgud · merge spec gap analysis · generated from spec/merge.md, context.md, and source review</footer>
+
+</div>
+</body>
+</html>
