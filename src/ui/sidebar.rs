@@ -16,7 +16,7 @@ use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, DIM, GREEN, PURPLE, RED, 
 /// Horizontal step per tree depth level.
 const INDENT: f32 = 14.0;
 
-/// What the user asked of a branch row: a left-click arms a checkout, the
+/// What the user asked of a branch row: a double-click arms a checkout, the
 /// right-click menu arms a new branch from that row's tip, and a click on a
 /// folder row toggles its collapsed state.
 enum BranchAction {
@@ -445,7 +445,7 @@ fn chevron(p: &Painter, c: Pos2, collapsed: bool) {
 }
 
 /// Draws the branch tree and returns the action the user asked for, if any: a
-/// left-click on a non-HEAD branch arms a checkout, the right-click menu arms a
+/// double-click on a non-HEAD branch arms a checkout, the right-click menu arms a
 /// new branch from that row, and a click on a folder toggles it. The caller
 /// confirms branch actions before acting.
 fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
@@ -566,7 +566,7 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
                         );
                     }
                 }
-                if resp.clicked() && !b.is_head {
+                if resp.double_clicked() && !b.is_head {
                     action = Some(BranchAction::Checkout(b.name.clone()));
                 }
                 // A branch's tip is a valid start point -- branch by name, which
