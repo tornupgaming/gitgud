@@ -47,3 +47,11 @@ The threat model is "the user opened a repo they don't fully trust" — see SECU
 - Bytes from git become `String` only via `from_utf8_lossy` — never `from_utf8().unwrap()`.
 
 Keyboard shortcuts: F5 refresh, Ctrl+Enter commit, Ctrl+P push; refresh also fires on window refocus.
+
+## Ubiquitous Language
+
+Before exploring, read `context.md` at the repo root.
+
+When you come across a name of a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in CONTEXT.md. Don't drift to synonyms the glossary explicitly avoids.
+
+If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap and `context.md` needs to be updated by the developer.
