@@ -7,7 +7,7 @@ A named, self-contained sequence of steps that carries out a user-initiated acti
 
 #### Example
 
-The Checkout Flow handles switching branches — checking for uncommitted changes, prompting the user to stash or discard if needed, performing the checkout, and reporting the result. It behaves the same whether invoked from the branch list, the command palette, or a keyboard shortcut.
+The Checkout Flow handles switching branches — checking for uncommitted changes, prompting the user to discard them (or cancel) if needed, performing the checkout, and reporting the result. It behaves the same whether invoked from the branch list, the command palette, or a keyboard shortcut.
 
 ### Modal
 
