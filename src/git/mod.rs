@@ -72,10 +72,13 @@ pub enum Job {
         message: String,
     },
     /// `branch` is a local name (`main`) or remote name (`origin/main`,
-    /// which creates a local tracking branch first).
+    /// which creates a local tracking branch first). `discard` runs a hard
+    /// reset of tracked + submodule changes first ("Discard & continue"), so
+    /// the reset and checkout land as one job.
     Checkout {
         id: RepoId,
         branch: String,
+        discard: bool,
     },
     /// Create a new local branch `name` pointing at `start_point` (a commit
     /// id or an existing branch name). With `checkout`, also switch HEAD to
@@ -86,12 +89,17 @@ pub enum Job {
         start_point: String,
         checkout: bool,
     },
-    /// Merge `branch` into HEAD via the git CLI (respects the user's merge
-    /// config and hooks). A conflicted merge is a *successful* job: the repo
-    /// enters the merge state and the conflicts surface through `Refresh`.
+    /// Merge `branch` via the git CLI (respects the user's merge config and
+    /// hooks). `direction` picks which way: `IntoCurrent` merges `branch` into
+    /// HEAD; `IntoSelected` checks out `branch` and merges the previous branch
+    /// into it, finishing on `branch`. `discard` hard-resets first, same as
+    /// `Checkout`. A conflicted merge is a *successful* job: the repo enters
+    /// the merge state and the conflicts surface through `Refresh`.
     Merge {
         id: RepoId,
         branch: String,
+        direction: MergeDirection,
+        discard: bool,
     },
     /// `git merge --abort`: restore the pre-merge state. Destructive to
     /// resolution progress -- the UI confirms first.
@@ -211,6 +219,16 @@ pub enum SyncStrategy {
 pub enum SyncKind {
     Push,
     Pull,
+}
+
+/// Which way a merge started from the branch list runs. `IntoCurrent` merges
+/// the selected branch into HEAD (HEAD stays put); `IntoSelected` checks out
+/// the selected branch and merges the previously-current branch into it,
+/// finishing on the (now advanced) selected branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeDirection {
+    IntoCurrent,
+    IntoSelected,
 }
 
 /// How to settle one conflicted file. `Ours`/`Theirs` take a whole side from

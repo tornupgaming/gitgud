@@ -145,9 +145,19 @@ fn run_job(
                 result,
             })
         }
-        Job::Checkout { id, branch } => {
-            let (repo, _) = repos.get(&id)?;
-            let result = ops::checkout(repo, &branch);
+        Job::Checkout {
+            id,
+            branch,
+            discard,
+        } => {
+            let (repo, workdir) = repos.get(&id)?;
+            // Discard & continue: reset first so the switch lands atomically.
+            // A failed reset never checks out -- one job, one Update.
+            let result = if discard {
+                ops::reset_hard(workdir).and_then(|()| ops::checkout(repo, &branch))
+            } else {
+                ops::checkout(repo, &branch)
+            };
             Some(Update::Acted {
                 id,
                 kind: ActionKind::Checkout,
@@ -168,14 +178,25 @@ fn run_job(
                 result,
             })
         }
-        Job::Merge { id, branch } => {
+        Job::Merge {
+            id,
+            branch,
+            direction,
+            discard,
+        } => {
             // Local but shells out to the CLI so the user's merge config,
-            // strategies, and hooks all apply.
+            // strategies, and hooks all apply. Discard & continue resets first,
+            // same atomic treatment as checkout.
             let (_, workdir) = repos.get(&id)?;
+            let result = if discard {
+                ops::reset_hard(workdir).and_then(|()| ops::merge(workdir, &branch, direction))
+            } else {
+                ops::merge(workdir, &branch, direction)
+            };
             Some(Update::Acted {
                 id,
                 kind: ActionKind::Merge,
-                result: ops::merge(workdir, &branch),
+                result,
             })
         }
         Job::AbortMerge { id } => {

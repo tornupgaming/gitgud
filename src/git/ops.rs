@@ -19,8 +19,8 @@ use git2::{
 
 use super::{
     BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey, DiffLine,
-    FileChange, FileDiff, HistoryPage, LineKind, MergeInfo, RefreshData, RepoMeta, Resolution,
-    SubmoduleInfo, SyncStrategy,
+    FileChange, FileDiff, HistoryPage, LineKind, MergeDirection, MergeInfo, RefreshData, RepoMeta,
+    Resolution, SubmoduleInfo, SyncStrategy,
 };
 
 /// Stop collecting diff lines past this point so a pathological diff
@@ -695,7 +695,44 @@ pub fn checkout(repo: &Repository, branch: &str) -> Result<String, String> {
     repo.checkout_tree(&obj, Some(CheckoutBuilder::new().safe()))
         .map_err(g)?;
     repo.set_head(&format!("refs/heads/{local}")).map_err(g)?;
+    // The switch may have moved submodule pointers; resync them locally so a
+    // stale pointer doesn't leave the worktree dirty and block the next flow.
+    if let Some(workdir) = repo.workdir() {
+        sync_submodules(workdir)?;
+    }
     Ok(format!("switched to {local}"))
+}
+
+/// Hard-resets the worktree for "Discard & continue": drops tracked staged +
+/// unstaged changes and resets dirty submodules to their recorded commits,
+/// leaving untracked files alone. Runs as the first step of a checkout/merge
+/// it unblocks so the reset and the switch land atomically. `--no-fetch` keeps
+/// the submodule reset local. Called only from the worker.
+pub fn reset_hard(workdir: &Path) -> Result<(), String> {
+    run_git(workdir, &["reset", "--hard", "HEAD"], "git reset failed")?;
+    run_git(
+        workdir,
+        &["submodule", "update", "--recursive", "--force", "--no-fetch"],
+        "git submodule update failed",
+    )?;
+    Ok(())
+}
+
+/// `git submodule update --recursive --no-fetch` after a checkout/merge moved
+/// submodule pointers, so the worktree isn't left dirty. No-op when the repo
+/// has no submodules. `--no-fetch` keeps it local: a recorded commit missing
+/// locally just leaves the submodule at its old commit for the user to update
+/// from the SUBMODULES panel (which fetches).
+fn sync_submodules(workdir: &Path) -> Result<(), String> {
+    if !workdir.join(".gitmodules").exists() {
+        return Ok(());
+    }
+    run_git(
+        workdir,
+        &["submodule", "update", "--recursive", "--no-fetch"],
+        "git submodule update failed",
+    )?;
+    Ok(())
 }
 
 /// Creates a local branch `name` at `start_point` (a commit id or an existing
@@ -732,9 +769,6 @@ pub fn create_branch(
     Ok(format!("created branch {name}"))
 }
 
-/// `git merge <branch>` via the CLI so the user's merge config, strategy,
-/// and hooks all apply. A conflicted merge returns `Ok` -- the repo is now
-/// legitimately in the merge state; only a merge that never started is `Err`.
 /// Inspects a merge/pull's combined output. Returns `Some(n)` — the count of
 /// conflicted files — when the run stopped on merge conflicts (a recoverable
 /// state, the repo is now mid-merge), or `None` when it didn't conflict.
@@ -755,42 +789,88 @@ fn conflict_count(stdout: &str, stderr: &str) -> Option<usize> {
     )
 }
 
-pub fn merge(workdir: &Path, branch: &str) -> Result<String, String> {
+/// Merges `branch` via the git CLI so the user's merge config, strategy, and
+/// hooks all apply. `IntoCurrent` merges `branch` into HEAD; `IntoSelected`
+/// checks out `branch` first and merges the previously-current branch into it,
+/// finishing on `branch`. A conflicted merge returns `Ok` — the repo is now
+/// legitimately mid-merge; only a merge that never started is `Err`. On a
+/// clean merge submodule pointers are resynced so a moved pointer doesn't
+/// leave the worktree dirty; on conflict the resync waits until the user
+/// commits the resolution.
+pub fn merge(
+    workdir: &Path,
+    branch: &str,
+    direction: MergeDirection,
+) -> Result<String, String> {
     // Branch names reaching here come from libgit2's ref enumeration, which
     // forbids a leading '-'. Re-check so this value can never be parsed as a
     // git flag if a future caller is less careful.
     if branch.starts_with('-') {
         return Err(format!("invalid branch name: {branch}"));
     }
+    let step = match direction {
+        MergeDirection::IntoCurrent => run_merge(workdir, branch)?,
+        MergeDirection::IntoSelected => {
+            // Remember where we are so we merge the original branch in, then
+            // switch onto the selected branch (the flow's preconditions
+            // guarantee a clean worktree, so this won't clobber anything).
+            let original = current_branch(workdir)?;
+            run_git(workdir, &["checkout", branch], "git checkout failed")?;
+            run_merge(workdir, &original)?
+        }
+    };
+    match step {
+        IntegrateStep::Done(status) => {
+            sync_submodules(workdir)?;
+            Ok(status)
+        }
+        // Conflicts: the repo is mid-merge on the selected branch and the
+        // follow-up Refresh surfaces them. Submodules resync on commit.
+        IntegrateStep::Stopped(status) => Ok(status),
+    }
+}
+
+/// Runs one `git merge <branch>` and classifies the result: a clean merge is
+/// `Done`, a conflicted one is `Stopped` (repo now mid-merge), anything else
+/// is a genuine `Err`.
+fn run_merge(workdir: &Path, branch: &str) -> Result<IntegrateStep, String> {
     let output = git_output(workdir, &["merge", branch])?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     if output.status.success() {
         // First stdout line is git's summary: "Merge made by the 'ort'
         // strategy." / "Already up to date." / "Updating abc..def" (ff).
-        return Ok(stdout
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .map(|l| l.trim().to_string())
-            .unwrap_or_else(|| "merge complete".to_string()));
+        return Ok(IntegrateStep::Done(
+            stdout
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+                .unwrap_or_else(|| "merge complete".to_string()),
+        ));
     }
-    // A conflicted merge exits nonzero but is a *successful* job: the repo is
-    // now in the merge state and the follow-up Refresh surfaces the conflicts.
     if let Some(n) = conflict_count(&stdout, &stderr) {
-        return Ok(match n {
+        return Ok(IntegrateStep::Stopped(match n {
             0 => "merge conflicts — resolve and commit".to_string(),
             n => format!("merge conflicts in {n} file(s) — resolve and commit"),
-        });
+        }));
     }
     // Genuine failure: unknown branch, dirty worktree, already merging, ...
-    let last = stderr
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .or_else(|| stdout.lines().rev().find(|l| !l.trim().is_empty()));
-    Err(last
-        .map(|l| l.trim().to_string())
-        .unwrap_or_else(|| "git merge failed".to_string()))
+    Err(last_nonempty(&stderr, &stdout, "git merge failed"))
+}
+
+/// Current branch name via the CLI. Errors on a detached HEAD — the merge
+/// flow gates that out UI-side, but `IntoSelected` needs a branch to merge in.
+fn current_branch(workdir: &Path) -> Result<String, String> {
+    let (stdout, _) = run_git(
+        workdir,
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        "git rev-parse failed",
+    )?;
+    let name = stdout.trim();
+    if name.is_empty() || name == "HEAD" {
+        return Err("cannot merge: HEAD is detached".to_string());
+    }
+    Ok(name.to_string())
 }
 
 pub fn abort_merge(workdir: &Path) -> Result<String, String> {

@@ -97,9 +97,17 @@ pub struct RepoTab {
     /// checkout and discard.
     pub pending_abort_merge: bool,
     pub commit_msg: String,
-    /// Branch the user clicked but hasn't confirmed switching to yet. While
-    /// set, the confirm dialog is shown; the checkout only fires on confirm.
+    /// Branch double-clicked whose Checkout Flow is blocked by a precondition
+    /// (uncommitted changes or a merge in progress). A clean checkout fires
+    /// immediately and never sets this; while set, the warning modal is shown.
     pub pending_checkout: Option<String>,
+    /// Merge started from a branch's context menu; drives the merge modal
+    /// (preconditions then direction choice).
+    pub pending_merge: Option<PendingMerge>,
+    /// Original branch to return to if an into-selected merge is aborted. Set
+    /// when that merge is dispatched, cleared at the next flow or on commit,
+    /// and consumed on `AbortMerge` to check the original branch back out.
+    pub merge_return: Option<String>,
     /// Discard awaiting confirmation: `Some(None)` = all unstaged changes,
     /// `Some(Some(path))` = one file. Same arm-then-confirm flow as checkout.
     pub pending_discard: Option<Option<String>>,
@@ -153,6 +161,8 @@ impl RepoTab {
             pending_abort_merge: false,
             commit_msg: String::new(),
             pending_checkout: None,
+            pending_merge: None,
+            merge_return: None,
             pending_discard: None,
             pending_branch: None,
             pending_sync: None,
@@ -182,6 +192,19 @@ impl RepoTab {
             .iter()
             .any(|f| f.kind == ChangeKind::Conflicted)
     }
+
+    /// The uncommitted-changes gate for the checkout and merge flows: staged
+    /// work, any non-untracked unstaged work, or a dirty submodule all block a
+    /// switch. Untracked files don't -- git carries them across a checkout
+    /// untouched, so blocking on them would surprise the user.
+    pub fn has_blocking_changes(&self) -> bool {
+        !self.staged.is_empty()
+            || self
+                .unstaged
+                .iter()
+                .any(|f| f.kind != ChangeKind::Untracked)
+            || self.submodules.iter().any(|s| s.dirty)
+    }
 }
 
 /// A diverged push/pull awaiting the user's reconcile choice. Carries which
@@ -192,6 +215,19 @@ pub struct PendingSync {
     pub kind: SyncKind,
     pub behind: usize,
     pub ahead: usize,
+}
+
+/// A merge started from the branch list, held while its modal is up. The modal
+/// runs the preconditions (uncommitted changes / merge-in-progress / detached
+/// HEAD) then offers the direction choice. `is_remote` hides the into-selected
+/// direction (you can't merge into a remote ref); `discard` records that the
+/// user waived the uncommitted-changes gate via Discard & continue, so the
+/// eventual `Job::Merge` resets first.
+#[derive(Clone)]
+pub struct PendingMerge {
+    pub branch: String,
+    pub is_remote: bool,
+    pub discard: bool,
 }
 
 /// Top-level state: the worker handle plus all open tabs. Every job must go
@@ -488,7 +524,7 @@ impl GitGudApp {
             }
             Update::Acted { kind, result, .. } => {
                 // Scoped block: end the tab borrow before calling self.send.
-                let ok = {
+                let (ok, restore) = {
                     let t = &mut self.tabs[idx];
                     if kind == ActionKind::Commit {
                         t.committing = false;
@@ -498,15 +534,34 @@ impl GitGudApp {
                             t.log = Some((false, msg));
                             if kind == ActionKind::Commit {
                                 t.commit_msg.clear();
+                                // Resolve-and-commit concluded an into-selected
+                                // merge on the selected branch: no abort can
+                                // follow, so the saved original is now inert.
+                                t.merge_return = None;
                             }
-                            true
+                            // An into-selected merge that was aborted lands on
+                            // the selected branch; restore the original branch
+                            // (the worktree is clean after an abort).
+                            let restore = if kind == ActionKind::AbortMerge {
+                                t.merge_return.take()
+                            } else {
+                                None
+                            };
+                            (true, restore)
                         }
                         Err(e) => {
                             t.log = Some((true, e));
-                            false
+                            (false, None)
                         }
                     }
                 };
+                if let Some(branch) = restore {
+                    self.send(Job::Checkout {
+                        id,
+                        branch,
+                        discard: false,
+                    });
+                }
                 if ok {
                     self.send(Job::Refresh { id });
                     // Push moves the remote-tracking ref, so history decorations
@@ -651,6 +706,7 @@ impl eframe::App for GitGudApp {
             // already means "close the modal".
             if esc
                 && t.pending_checkout.is_none()
+                && t.pending_merge.is_none()
                 && t.pending_discard.is_none()
                 && t.pending_branch.is_none()
                 && t.pending_sync.is_none()
