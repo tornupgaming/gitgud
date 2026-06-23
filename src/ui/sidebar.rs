@@ -3,15 +3,14 @@
 use std::collections::HashSet;
 
 use eframe::egui::{
-    Align, Align2, CentralPanel, Color32, CornerRadius, Frame, Id, Key, Layout, Margin, Modal,
-    Painter, Panel, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, TextEdit, TextStyle,
-    Ui, pos2, vec2,
+    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Key, Layout, Margin, Painter, Panel,
+    Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
 use super::{HudButton, module, submodules};
 use crate::app::{NewBranch, PendingMerge, RepoTab};
 use crate::git::{BranchInfo, Job, MergeDirection};
-use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, DIM, GREEN, PURPLE, RED, TEXT};
+use crate::theme::{self, ACCENT, AMBER, BG3, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// Horizontal step per tree depth level.
 const INDENT: f32 = 14.0;
@@ -102,66 +101,11 @@ fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     }
 }
 
-/// The tracked title and fade rule atop every HUD modal in this column.
-fn modal_header(ui: &mut Ui, title: &str, accent: Color32) {
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
-    theme::tracked_text(
-        ui.painter(),
-        pos2(r.left(), r.center().y),
-        Align2::LEFT_CENTER,
-        title,
-        theme::display_font(13.0),
-        accent,
-        2.5,
-    );
-    let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-    theme::fade_rule(
-        ui.painter(),
-        pos2(rule.left(), rule.center().y),
-        rule.width(),
-        accent,
-    );
-    ui.add_space(6.0);
-}
-
-/// Angular HUD modal shell: accent frame, dimmed backdrop, tracked title, and
-/// corner brackets round the content. Returns the body's value and whether the
-/// modal asked to close (backdrop click or Escape).
-fn hud_modal<R>(
-    ui: &mut Ui,
-    id: &str,
-    title: &str,
-    accent: Color32,
-    width: f32,
-    body: impl FnOnce(&mut Ui) -> R,
-) -> (R, bool) {
-    let frame = Frame::new()
-        .fill(BG1)
-        .stroke(Stroke::new(1.0, accent))
-        .inner_margin(Margin::same(14));
-    let modal = Modal::new(Id::new(id))
-        .frame(frame)
-        .backdrop_color(theme::alpha(BG0, 215))
-        .show(ui.ctx(), |ui| {
-            ui.set_width(width);
-            modal_header(ui, title, accent);
-            let inner = body(ui);
-            theme::corner_brackets(
-                ui.painter(),
-                ui.min_rect().expand(10.0),
-                12.0,
-                Stroke::new(1.5, accent),
-            );
-            inner
-        });
-    let closed = modal.should_close();
-    (modal.inner, closed)
-}
-
 /// The Checkout Flow's warning modal, shown only when a precondition blocks the
 /// switch. Uncommitted changes (checked first) offer Discard & continue; a
 /// merge in progress is exit-only. A clean switch never reaches here.
 fn checkout_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let t = super::factor(ui.ctx(), Id::new("checkout_flow"), tab.pending_checkout.is_some());
     let Some(branch) = tab.pending_checkout.clone() else {
         return;
     };
@@ -180,7 +124,7 @@ fn checkout_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     }
 
     let ((discard, cancel), closed) =
-        hud_modal(ui, "checkout_flow", "CHECKOUT BLOCKED", ACCENT, 300.0, |ui| {
+        super::hud_modal(ui, "checkout_flow", "CHECKOUT BLOCKED", ACCENT, 300.0, t, |ui| {
             if dirty {
                 ui.label(format!(
                     "Switch to \"{branch}\" — but you have uncommitted changes."
@@ -238,6 +182,7 @@ fn checkout_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 /// choice. The job fires only on a direction click. Discard & continue waives
 /// the uncommitted-changes gate and rides on the eventual job's `discard` flag.
 fn merge_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let t = super::factor(ui.ctx(), Id::new("merge_flow"), tab.pending_merge.is_some());
     let Some(pm) = tab.pending_merge.clone() else {
         return;
     };
@@ -251,7 +196,7 @@ fn merge_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         Cancel,
     }
 
-    let (outcome, closed) = hud_modal(ui, "merge_flow", "MERGE", ACCENT, 330.0, |ui| {
+    let (outcome, closed) = super::hud_modal(ui, "merge_flow", "MERGE", ACCENT, 330.0, t, |ui| {
         if dirty && !pm.discard {
             ui.label(format!(
                 "Merge \"{}\" — but you have uncommitted changes.",
@@ -401,12 +346,13 @@ fn merge_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 /// and CREATE + SWITCH (also check it out). The job fires on confirm or Enter;
 /// clicking away, Escape, or Cancel aborts. An empty name disables both.
 fn confirm_new_branch(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let t = super::factor(ui.ctx(), Id::new("new_branch"), tab.pending_branch.is_some());
     if tab.pending_branch.is_none() {
         return;
     }
 
     let ((create_switch, create, cancel), closed) =
-        hud_modal(ui, "new_branch", "NEW BRANCH", ACCENT, 300.0, |ui| {
+        super::hud_modal(ui, "new_branch", "NEW BRANCH", ACCENT, 300.0, t, |ui| {
             // `unwrap` is safe: the early return above guards `is_none`.
             let nb = tab.pending_branch.as_mut().unwrap();
             ui.label(format!("Branch from \"{}\":", nb.label));
@@ -764,7 +710,7 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
                 }
                 // A branch's tip is a valid start point -- branch by name, which
                 // revparse resolves for both local and remote branches.
-                resp.context_menu(|ui| {
+                super::hud_menu(&resp, |ui| {
                     if ui.button("Create branch from here").clicked() {
                         action = Some(BranchAction::CreateFrom {
                             start_point: b.name.clone(),

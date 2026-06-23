@@ -2,52 +2,25 @@
 //! from its upstream. The worker never picks a strategy on its own -- it
 //! reports the divergence and this modal hands the choice to the user.
 
-use eframe::egui::{
-    Align, Align2, Frame, Id, Layout, Margin, Modal, RichText, Sense, Stroke, Ui, pos2, vec2,
-};
+use eframe::egui::{Align, Id, Layout, RichText, Ui};
 
 use super::HudButton;
 use crate::app::RepoTab;
 use crate::git::{Job, SyncKind, SyncStrategy};
-use crate::theme::{self, ACCENT, AMBER, BG0, BG1, DIM};
+use crate::theme::{ACCENT, AMBER, DIM};
 
 /// Renders the merge/rebase/cancel dialog while `tab.pending_sync` is set, and
 /// turns the click into a [`Job::Integrate`] (or clears the arming on cancel).
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let t = super::factor(ui.ctx(), Id::new("reconcile_sync"), tab.pending_sync.is_some());
     let Some(sync) = tab.pending_sync else {
         return;
     };
     // Push must end with the commits on origin; pull just reconciles locally.
     let push_after = sync.kind == SyncKind::Push;
 
-    let frame = Frame::new()
-        .fill(BG1)
-        .stroke(Stroke::new(1.0, ACCENT))
-        .inner_margin(Margin::same(14));
-    let modal = Modal::new(Id::new("reconcile_sync"))
-        .frame(frame)
-        .backdrop_color(theme::alpha(BG0, 215))
-        .show(ui.ctx(), |ui| {
-            ui.set_width(340.0);
-            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
-            theme::tracked_text(
-                ui.painter(),
-                pos2(r.left(), r.center().y),
-                Align2::LEFT_CENTER,
-                "UPSTREAM DIVERGED",
-                theme::display_font(13.0),
-                ACCENT,
-                2.5,
-            );
-            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-            theme::fade_rule(
-                ui.painter(),
-                pos2(rule.left(), rule.center().y),
-                rule.width(),
-                ACCENT,
-            );
-            ui.add_space(6.0);
-
+    let ((merge, rebase, cancel), closed) =
+        super::hud_modal(ui, "reconcile_sync", "UPSTREAM DIVERGED", ACCENT, 340.0, t, |ui| {
             // The friction itself: origin moved under you.
             ui.label(
                 RichText::new(format!(
@@ -83,24 +56,15 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             );
 
             ui.add_space(14.0);
-            let buttons = ui
-                .with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let merge = ui.add(HudButton::new("MERGE").accent(true)).clicked();
-                    let rebase = ui.add(HudButton::new("REBASE")).clicked();
-                    let cancel = ui.add(HudButton::new("CANCEL")).clicked();
-                    (merge, rebase, cancel)
-                })
-                .inner;
-            theme::corner_brackets(
-                ui.painter(),
-                ui.min_rect().expand(10.0),
-                12.0,
-                Stroke::new(1.5, ACCENT),
-            );
-            buttons
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let merge = ui.add(HudButton::new("MERGE").accent(true)).clicked();
+                let rebase = ui.add(HudButton::new("REBASE")).clicked();
+                let cancel = ui.add(HudButton::new("CANCEL")).clicked();
+                (merge, rebase, cancel)
+            })
+            .inner
         });
 
-    let (merge, rebase, cancel) = modal.inner;
     let strategy = if merge {
         Some(SyncStrategy::Merge)
     } else if rebase {
@@ -115,7 +79,7 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             push_after,
         });
         tab.pending_sync = None;
-    } else if cancel || modal.should_close() {
+    } else if cancel || closed {
         tab.pending_sync = None;
     }
 }

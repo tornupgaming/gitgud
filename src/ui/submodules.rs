@@ -124,7 +124,7 @@ fn rows(ui: &mut Ui, tab: &RepoTab) -> Option<SubAction> {
         if resp.clicked() {
             action = Some(SubAction::Open(s.path.clone()));
         }
-        resp.context_menu(|ui| {
+        super::hud_menu(&resp, |ui| {
             if ui.button("Open as tab").clicked() {
                 action = Some(SubAction::Open(s.path.clone()));
                 ui.close();

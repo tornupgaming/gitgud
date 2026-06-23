@@ -3,15 +3,15 @@
 //! (metadata + touched-file list) while a graph commit is selected.
 
 use eframe::egui::{
-    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Modal, Panel, Rect,
-    RichText, ScrollArea, Sense, Spinner, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
+    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Panel, Rect, RichText,
+    ScrollArea, Sense, Spinner, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
 use super::diff::DiffView;
 use super::{HudButton, module, rel_time, sub_label, truncate_left};
 use crate::app::RepoTab;
 use crate::git::{ChangeKind, DiffKey, Job};
-use crate::theme::{self, ACCENT, AMBER, BG0, BG1, BG3, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
+use crate::theme::{self, ACCENT, AMBER, BG3, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// Picks the column's mode off the current selection, then runs the discard
 /// and abort-merge confirm modals (they render whenever their tab state is
@@ -110,37 +110,13 @@ fn merge_banner(ui: &mut Ui, tab: &mut RepoTab) {
 /// Modal for a pending merge abort. Destroys all resolution progress, so it
 /// gets the same red treatment as discard.
 fn confirm_abort_merge(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let t = super::factor(ui.ctx(), Id::new("confirm_abort_merge"), tab.pending_abort_merge);
     if !tab.pending_abort_merge {
         return;
     }
 
-    let frame = Frame::new()
-        .fill(BG1)
-        .stroke(Stroke::new(1.0, RED))
-        .inner_margin(Margin::same(14));
-    let modal = Modal::new(Id::new("confirm_abort_merge"))
-        .frame(frame)
-        .backdrop_color(theme::alpha(BG0, 215))
-        .show(ui.ctx(), |ui| {
-            ui.set_width(300.0);
-            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
-            theme::tracked_text(
-                ui.painter(),
-                pos2(r.left(), r.center().y),
-                Align2::LEFT_CENTER,
-                "CONFIRM ABORT",
-                theme::display_font(13.0),
-                RED,
-                2.5,
-            );
-            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-            theme::fade_rule(
-                ui.painter(),
-                pos2(rule.left(), rule.center().y),
-                rule.width(),
-                RED,
-            );
-            ui.add_space(6.0);
+    let ((abort, cancel), closed) =
+        super::hud_modal(ui, "confirm_abort_merge", "CONFIRM ABORT", RED, 300.0, t, |ui| {
             ui.label("Abort the merge in progress?");
             ui.add_space(4.0);
             ui.label(
@@ -149,29 +125,20 @@ fn confirm_abort_merge(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                     .color(RED),
             );
             ui.add_space(14.0);
-            let buttons = ui
-                .with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let abort = ui
-                        .add(HudButton::new("ABORT MERGE").text_color(RED))
-                        .clicked();
-                    let cancel = ui.add(HudButton::new("CANCEL")).clicked();
-                    (abort, cancel)
-                })
-                .inner;
-            theme::corner_brackets(
-                ui.painter(),
-                ui.min_rect().expand(10.0),
-                12.0,
-                Stroke::new(1.5, RED),
-            );
-            buttons
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let abort = ui
+                    .add(HudButton::new("ABORT MERGE").text_color(RED))
+                    .clicked();
+                let cancel = ui.add(HudButton::new("CANCEL")).clicked();
+                (abort, cancel)
+            })
+            .inner
         });
 
-    let (abort, cancel) = modal.inner;
     if abort {
         jobs.push(Job::AbortMerge { id: tab.id });
         tab.pending_abort_merge = false;
-    } else if cancel || modal.should_close() {
+    } else if cancel || closed {
         tab.pending_abort_merge = false;
     }
 }
@@ -300,6 +267,7 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
 /// Modal for a pending discard. Destructive (untracked files are deleted, no
 /// undo), so it gets the red treatment instead of the checkout dialog's accent.
 fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let t = super::factor(ui.ctx(), Id::new("confirm_discard"), tab.pending_discard.is_some());
     let Some(target) = tab.pending_discard.clone() else {
         return;
     };
@@ -308,33 +276,8 @@ fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         None => format!("Discard all {} unstaged changes?", tab.unstaged.len()),
     };
 
-    let frame = Frame::new()
-        .fill(BG1)
-        .stroke(Stroke::new(1.0, RED))
-        .inner_margin(Margin::same(14));
-    let modal = Modal::new(Id::new("confirm_discard"))
-        .frame(frame)
-        .backdrop_color(theme::alpha(BG0, 215))
-        .show(ui.ctx(), |ui| {
-            ui.set_width(300.0);
-            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::hover());
-            theme::tracked_text(
-                ui.painter(),
-                pos2(r.left(), r.center().y),
-                Align2::LEFT_CENTER,
-                "CONFIRM DISCARD",
-                theme::display_font(13.0),
-                RED,
-                2.5,
-            );
-            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-            theme::fade_rule(
-                ui.painter(),
-                pos2(rule.left(), rule.center().y),
-                rule.width(),
-                RED,
-            );
-            ui.add_space(6.0);
+    let ((discard, cancel), closed) =
+        super::hud_modal(ui, "confirm_discard", "CONFIRM DISCARD", RED, 300.0, t, |ui| {
             ui.label(what);
             ui.add_space(4.0);
             ui.label(
@@ -343,30 +286,21 @@ fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                     .color(RED),
             );
             ui.add_space(14.0);
-            let buttons = ui
-                .with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let discard = ui.add(HudButton::new("DISCARD").text_color(RED)).clicked();
-                    let cancel = ui.add(HudButton::new("CANCEL")).clicked();
-                    (discard, cancel)
-                })
-                .inner;
-            theme::corner_brackets(
-                ui.painter(),
-                ui.min_rect().expand(10.0),
-                12.0,
-                Stroke::new(1.5, RED),
-            );
-            buttons
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let discard = ui.add(HudButton::new("DISCARD").text_color(RED)).clicked();
+                let cancel = ui.add(HudButton::new("CANCEL")).clicked();
+                (discard, cancel)
+            })
+            .inner
         });
 
-    let (discard, cancel) = modal.inner;
     if discard {
         jobs.push(Job::Discard {
             id: tab.id,
             path: target,
         });
         tab.pending_discard = None;
-    } else if cancel || modal.should_close() {
+    } else if cancel || closed {
         tab.pending_discard = None;
     }
 }

@@ -4,6 +4,7 @@ pub mod conflict;
 pub mod diff;
 pub mod graph;
 mod highlight;
+mod reveal;
 pub mod shell;
 pub mod sidebar;
 pub mod submodules;
@@ -11,6 +12,7 @@ pub mod sync;
 pub mod widgets;
 pub mod worktree;
 
+pub(crate) use reveal::{factor, hud_menu, hud_modal};
 pub use shell::{TopBarAction, empty_state, status_bar, top_bar};
 pub use widgets::HudButton;
 

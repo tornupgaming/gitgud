@@ -285,7 +285,7 @@ fn commit_row(
             Action::Select(c.id.clone())
         });
     }
-    resp.context_menu(|ui| {
+    super::hud_menu(&resp, |ui| {
         if ui.button("Create branch from here").clicked() {
             *action = Some(Action::CreateBranch(c.id.clone(), c.short.clone()));
             ui.close();
