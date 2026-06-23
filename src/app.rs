@@ -128,6 +128,12 @@ pub struct RepoTab {
     pub loaded: bool,
     /// A commit job is in flight -- blocks double-commits.
     pub committing: bool,
+    /// Long-running network ops in flight (fetch/push/pull/submodules),
+    /// newest last. While non-empty the progress modal floats over the console
+    /// so a multi-second remote round trip reads as work underway, not a hang.
+    /// Pushed in `GitGudApp::send`, drained when the matching network reply
+    /// lands -- a stack so overlapping ops keep the modal up until the last.
+    pub net_ops: Vec<&'static str>,
     /// Set by the worktree watcher thread; the frame loop turns it into a
     /// `Refresh` once the tab is idle.
     fs_dirty: Arc<AtomicBool>,
@@ -171,6 +177,7 @@ impl RepoTab {
             log: None,
             loaded: false,
             committing: false,
+            net_ops: Vec::new(),
             fs_dirty: Arc::new(AtomicBool::new(false)),
             watcher: None,
             last_auto_refresh: Instant::now(),
@@ -298,6 +305,11 @@ impl GitGudApp {
                 if matches!(job, Job::Commit { .. }) {
                     t.committing = true;
                 }
+                // A long-running network op opens the progress modal; the
+                // matching reply pops it in `handle_update`.
+                if let Some(label) = net_label(&job) {
+                    t.net_ops.push(label);
+                }
             }
         }
         self.worker.send(job);
@@ -396,6 +408,11 @@ impl GitGudApp {
             return;
         };
         self.tabs[idx].in_flight = self.tabs[idx].in_flight.saturating_sub(1);
+        // A finished network op (or a divergence that hands off to the
+        // reconcile modal) closes the progress modal; drain its stack entry.
+        if net_done(&upd) {
+            self.tabs[idx].net_ops.pop();
+        }
 
         match upd {
             Update::Opened {
@@ -625,6 +642,34 @@ fn job_id(job: &Job) -> RepoId {
     }
 }
 
+/// The progress-modal label for a long-running network job, or `None` for a
+/// local job (which is fast enough to need no modal). An integrate carries the
+/// label of the button that began the flow so it reads as the same op.
+fn net_label(job: &Job) -> Option<&'static str> {
+    match job {
+        Job::Fetch { .. } => Some("FETCH"),
+        Job::Push { .. } => Some("PUSH"),
+        Job::Pull { .. } => Some("PULL"),
+        Job::Integrate { push_after, .. } => Some(if *push_after { "PUSH" } else { "PULL" }),
+        Job::UpdateSubmodules { .. } => Some("SUBMODULES"),
+        _ => None,
+    }
+}
+
+/// Whether an update concludes a long-running network op, so its progress
+/// modal entry should be popped. A `Diverged` reply ends the op too -- it
+/// hands the flow off to the reconcile modal.
+fn net_done(upd: &Update) -> bool {
+    match upd {
+        Update::Acted { kind, .. } => matches!(
+            kind,
+            ActionKind::Fetch | ActionKind::Push | ActionKind::Pull | ActionKind::UpdateSubmodules
+        ),
+        Update::Diverged { .. } => true,
+        _ => false,
+    }
+}
+
 fn update_id(upd: &Update) -> RepoId {
     match upd {
         Update::Opened { id, .. }
@@ -710,6 +755,7 @@ impl eframe::App for GitGudApp {
                 && t.pending_discard.is_none()
                 && t.pending_branch.is_none()
                 && t.pending_sync.is_none()
+                && t.net_ops.is_empty()
                 && !t.pending_abort_merge
             {
                 if t.commit_file.is_some() {
@@ -824,6 +870,14 @@ impl eframe::App for GitGudApp {
         // console once a probe reports divergence.
         if let Some(t) = self.tabs.get_mut(self.active) {
             ui::sync::show(ui, t, &mut jobs);
+        }
+
+        // Progress modal for an in-flight network op (fetch/push/pull/
+        // submodules). Floats over the console while `net_ops` is non-empty so
+        // a slow remote round trip reads as work underway. Mutually exclusive
+        // with the reconcile dialog: a divergence drains the op as it arms it.
+        if let Some(t) = self.tabs.get(self.active) {
+            ui::progress::show(ui, t);
         }
 
         // CRT scanlines over the whole frame, then the outer HUD bezel:

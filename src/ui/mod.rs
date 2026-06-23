@@ -4,6 +4,7 @@ pub mod conflict;
 pub mod diff;
 pub mod graph;
 mod highlight;
+pub mod progress;
 mod reveal;
 pub mod shell;
 pub mod sidebar;
