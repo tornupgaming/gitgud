@@ -24,6 +24,12 @@ notify = { version = "8", default-features = false }
 # dump; yaml-load lets us add the Odin grammar the defaults lack.
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-onig", "yaml-load"] }
 
+# eframe is built with default-features off (to trim the wgpu/macOS extras), which
+# also drops winit's windowing backends. Windows always has Win32, but Linux needs
+# X11/Wayland enabled explicitly. Scoped to Linux so the Windows build is unchanged.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.34.3", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+
 # Size-optimized release build, so binary size measurements are honest.
 [profile.release]
 opt-level = "s"     # optimize for size over speed
