@@ -116,12 +116,7 @@ fn step_glyph(ui: &mut Ui, state: StepState) {
 /// the modal. A reassurance line stands in until the first output arrives.
 fn console_tail(ui: &mut Ui, op: &OpProgress) {
     let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-    theme::fade_rule(
-        ui.painter(),
-        rule.left_center(),
-        rule.width(),
-        ACCENT,
-    );
+    theme::fade_rule(ui.painter(), rule.left_center(), rule.width(), ACCENT);
     ui.add_space(4.0);
 
     if op.console.is_empty() {

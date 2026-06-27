@@ -737,7 +737,13 @@ pub fn reset_hard(workdir: &Path) -> Result<(), String> {
     run_git(workdir, &["reset", "--hard", "HEAD"], "git reset failed")?;
     run_git(
         workdir,
-        &["submodule", "update", "--recursive", "--force", "--no-fetch"],
+        &[
+            "submodule",
+            "update",
+            "--recursive",
+            "--force",
+            "--no-fetch",
+        ],
         "git submodule update failed",
     )?;
     Ok(())
@@ -822,11 +828,7 @@ fn conflict_count(stdout: &str, stderr: &str) -> Option<usize> {
 /// clean merge submodule pointers are resynced so a moved pointer doesn't
 /// leave the worktree dirty; on conflict the resync waits until the user
 /// commits the resolution.
-pub fn merge(
-    workdir: &Path,
-    branch: &str,
-    direction: MergeDirection,
-) -> Result<String, String> {
+pub fn merge(workdir: &Path, branch: &str, direction: MergeDirection) -> Result<String, String> {
     // Branch names reaching here come from libgit2's ref enumeration, which
     // forbids a leading '-'. Re-check so this value can never be parsed as a
     // git flag if a future caller is less careful.
@@ -1330,7 +1332,11 @@ fn rebase_upstream(workdir: &Path, report: Reporter<'_>) -> Result<IntegrateStep
 /// the first such line and closes when git's own output begins (or with the
 /// push itself if the hook was the whole story).
 fn do_push(workdir: &Path, report: Reporter<'_>) -> Result<String, String> {
-    report(ProgressEvent::step("push", "PUSH — origin HEAD", StepState::Running));
+    report(ProgressEvent::step(
+        "push",
+        "PUSH — origin HEAD",
+        StepState::Running,
+    ));
 
     // State for the pre-push-hook heuristic, tracked across the streamed lines.
     let mut hook_open = false;
@@ -1378,9 +1384,17 @@ fn do_push(workdir: &Path, report: Reporter<'_>) -> Result<String, String> {
             // A push that was nothing but hook output (no transfer, e.g. already
             // up to date) still leaves the hook step open -- close it.
             if hook_open && !saw_git_output {
-                report(ProgressEvent::step("hook", "PRE-PUSH HOOK", StepState::Done));
+                report(ProgressEvent::step(
+                    "hook",
+                    "PRE-PUSH HOOK",
+                    StepState::Done,
+                ));
             }
-            report(ProgressEvent::step("push", "PUSH — origin HEAD", StepState::Done));
+            report(ProgressEvent::step(
+                "push",
+                "PUSH — origin HEAD",
+                StepState::Done,
+            ));
             let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
             match last_line {
                 // "Everything up-to-date" already reads as a full status message.
@@ -1392,13 +1406,25 @@ fn do_push(workdir: &Path, report: Reporter<'_>) -> Result<String, String> {
         Ok((stdout, stderr, false)) => {
             // A failed push commonly means the pre-push hook rejected it.
             if hook_open && !saw_git_output {
-                report(ProgressEvent::step("hook", "PRE-PUSH HOOK", StepState::Failed));
+                report(ProgressEvent::step(
+                    "hook",
+                    "PRE-PUSH HOOK",
+                    StepState::Failed,
+                ));
             }
-            report(ProgressEvent::step("push", "PUSH — origin HEAD", StepState::Failed));
+            report(ProgressEvent::step(
+                "push",
+                "PUSH — origin HEAD",
+                StepState::Failed,
+            ));
             Err(last_nonempty(&stderr, &stdout, "git push failed"))
         }
         Err(e) => {
-            report(ProgressEvent::step("push", "PUSH — origin HEAD", StepState::Failed));
+            report(ProgressEvent::step(
+                "push",
+                "PUSH — origin HEAD",
+                StepState::Failed,
+            ));
             Err(e)
         }
     }
