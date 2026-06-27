@@ -110,13 +110,23 @@ fn merge_banner(ui: &mut Ui, tab: &mut RepoTab) {
 /// Modal for a pending merge abort. Destroys all resolution progress, so it
 /// gets the same red treatment as discard.
 fn confirm_abort_merge(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    let t = super::factor(ui.ctx(), Id::new("confirm_abort_merge"), tab.pending_abort_merge);
+    let t = super::factor(
+        ui.ctx(),
+        Id::new("confirm_abort_merge"),
+        tab.pending_abort_merge,
+    );
     if !tab.pending_abort_merge {
         return;
     }
 
-    let ((abort, cancel), closed) =
-        super::hud_modal(ui, "confirm_abort_merge", "CONFIRM ABORT", RED, 300.0, t, |ui| {
+    let ((abort, cancel), closed) = super::hud_modal(
+        ui,
+        "confirm_abort_merge",
+        "CONFIRM ABORT",
+        RED,
+        300.0,
+        t,
+        |ui| {
             ui.label("Abort the merge in progress?");
             ui.add_space(4.0);
             ui.label(
@@ -133,7 +143,8 @@ fn confirm_abort_merge(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                 (abort, cancel)
             })
             .inner
-        });
+        },
+    );
 
     if abort {
         jobs.push(Job::AbortMerge { id: tab.id });
@@ -267,7 +278,11 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
 /// Modal for a pending discard. Destructive (untracked files are deleted, no
 /// undo), so it gets the red treatment instead of the checkout dialog's accent.
 fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    let t = super::factor(ui.ctx(), Id::new("confirm_discard"), tab.pending_discard.is_some());
+    let t = super::factor(
+        ui.ctx(),
+        Id::new("confirm_discard"),
+        tab.pending_discard.is_some(),
+    );
     let Some(target) = tab.pending_discard.clone() else {
         return;
     };
@@ -276,8 +291,14 @@ fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         None => format!("Discard all {} unstaged changes?", tab.unstaged.len()),
     };
 
-    let ((discard, cancel), closed) =
-        super::hud_modal(ui, "confirm_discard", "CONFIRM DISCARD", RED, 300.0, t, |ui| {
+    let ((discard, cancel), closed) = super::hud_modal(
+        ui,
+        "confirm_discard",
+        "CONFIRM DISCARD",
+        RED,
+        300.0,
+        t,
+        |ui| {
             ui.label(what);
             ui.add_space(4.0);
             ui.label(
@@ -292,7 +313,8 @@ fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                 (discard, cancel)
             })
             .inner
-        });
+        },
+    );
 
     if discard {
         jobs.push(Job::Discard {

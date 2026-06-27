@@ -12,15 +12,25 @@ use crate::theme::{ACCENT, AMBER, DIM};
 /// Renders the merge/rebase/cancel dialog while `tab.pending_sync` is set, and
 /// turns the click into a [`Job::Integrate`] (or clears the arming on cancel).
 pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    let t = super::factor(ui.ctx(), Id::new("reconcile_sync"), tab.pending_sync.is_some());
+    let t = super::factor(
+        ui.ctx(),
+        Id::new("reconcile_sync"),
+        tab.pending_sync.is_some(),
+    );
     let Some(sync) = tab.pending_sync else {
         return;
     };
     // Push must end with the commits on origin; pull just reconciles locally.
     let push_after = sync.kind == SyncKind::Push;
 
-    let ((merge, rebase, cancel), closed) =
-        super::hud_modal(ui, "reconcile_sync", "UPSTREAM DIVERGED", ACCENT, 340.0, t, |ui| {
+    let ((merge, rebase, cancel), closed) = super::hud_modal(
+        ui,
+        "reconcile_sync",
+        "UPSTREAM DIVERGED",
+        ACCENT,
+        340.0,
+        t,
+        |ui| {
             // The friction itself: origin moved under you.
             ui.label(
                 RichText::new(format!(
@@ -63,7 +73,8 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                 (merge, rebase, cancel)
             })
             .inner
-        });
+        },
+    );
 
     let strategy = if merge {
         Some(SyncStrategy::Merge)
