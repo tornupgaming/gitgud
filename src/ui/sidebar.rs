@@ -93,7 +93,9 @@ fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         }
         Some(BranchAction::ToggleFolder(path)) => {
             // Absent = expanded, so toggling is remove-or-insert.
-            if !tab.collapsed_folders.remove(&path) {
+            if tab.collapsed_folders.contains(&path) {
+                tab.collapsed_folders.remove(&path);
+            } else {
                 tab.collapsed_folders.insert(path);
             }
         }
