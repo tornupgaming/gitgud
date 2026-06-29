@@ -202,6 +202,61 @@ pub enum Update {
         /// Commits the local branch has that the upstream lacks.
         ahead: usize,
     },
+    /// A mid-flight progress report from a long-running network op, streamed
+    /// from the worker's network thread *before* the terminal [`Update::Acted`]
+    /// (or [`Update::Diverged`]). Several arrive per op; they drive the progress
+    /// modal's step checklist and console tail. `op` is the op label
+    /// (`PUSH`/`PULL`/`FETCH`/`SUBMODULES`) so the UI routes the event to the
+    /// right entry when ops overlap. Unlike every other reply this is *not*
+    /// terminal: it neither answers the job's in-flight count nor closes the op.
+    Progress {
+        id: RepoId,
+        op: &'static str,
+        event: ProgressEvent,
+    },
+}
+
+/// One unit of live progress for a network op. A [`Step`] announces or updates
+/// a checklist row (re-sent with the same `key` to change its state); a
+/// [`Console`] line is one piece of raw subprocess output for the tail readout
+/// so the user can see the remote actually responding.
+///
+/// [`Step`]: ProgressEvent::Step
+/// [`Console`]: ProgressEvent::Console
+#[derive(Debug, Clone)]
+pub enum ProgressEvent {
+    /// Add the step under `key`, or update it in place if `key` already exists.
+    Step {
+        key: String,
+        label: String,
+        state: StepState,
+    },
+    /// One line of subprocess output (stdout or stderr), already split on
+    /// `\n`/`\r` so transfer-progress redraws arrive as they happen. Bounded
+    /// per line in [`ops`] and capped in the UI ring buffer.
+    Console(String),
+}
+
+impl ProgressEvent {
+    /// Shorthand for a [`Step`] event from string slices.
+    ///
+    /// [`Step`]: ProgressEvent::Step
+    pub fn step(key: &str, label: &str, state: StepState) -> Self {
+        ProgressEvent::Step {
+            key: key.to_string(),
+            label: label.to_string(),
+            state,
+        }
+    }
+}
+
+/// A checklist step's lifecycle: `Running` shows a spinner, `Done` a check,
+/// `Failed` a cross. A step is born `Running` and re-sent once with its outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepState {
+    Running,
+    Done,
+    Failed,
 }
 
 /// How to reconcile a diverged branch, chosen by the user in the sync dialog.

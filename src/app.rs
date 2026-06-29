@@ -19,7 +19,7 @@ use notify::Watcher;
 use crate::git::worker::GitWorker;
 use crate::git::{
     ActionKind, BranchInfo, ChangeKind, CommitInfo, DiffData, DiffKey, FileChange, Job, MergeInfo,
-    RepoId, SubmoduleInfo, SyncKind, Update, graph::Graph,
+    ProgressEvent, RepoId, StepState, SubmoduleInfo, SyncKind, Update, graph::Graph,
 };
 use crate::theme::{self, ACCENT, BG1};
 use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
@@ -128,12 +128,14 @@ pub struct RepoTab {
     pub loaded: bool,
     /// A commit job is in flight -- blocks double-commits.
     pub committing: bool,
-    /// Long-running network ops in flight (fetch/push/pull/submodules),
-    /// newest last. While non-empty the progress modal floats over the console
-    /// so a multi-second remote round trip reads as work underway, not a hang.
-    /// Pushed in `GitGudApp::send`, drained when the matching network reply
-    /// lands -- a stack so overlapping ops keep the modal up until the last.
-    pub net_ops: Vec<&'static str>,
+    /// Long-running network ops in flight (fetch/push/pull/submodules), newest
+    /// last, each carrying its live step checklist and console tail. While
+    /// non-empty the progress modal floats over the console so a multi-second
+    /// remote round trip reads as work underway, not a hang. An entry is pushed
+    /// in `GitGudApp::send`, fed by `Update::Progress`, and removed when the
+    /// matching network reply lands -- a stack so overlapping ops keep the modal
+    /// up until the last, with the newest shown.
+    pub net_ops: Vec<OpProgress>,
     /// Set by the worktree watcher thread; the frame loop turns it into a
     /// `Refresh` once the tab is idle.
     fs_dirty: Arc<AtomicBool>,
@@ -211,6 +213,62 @@ impl RepoTab {
                 .iter()
                 .any(|f| f.kind != ChangeKind::Untracked)
             || self.submodules.iter().any(|s| s.dirty)
+    }
+}
+
+/// Live progress for one in-flight network op, built up from the worker's
+/// `Update::Progress` stream and drawn by the progress modal. `op` is the
+/// op label (matches what `net_label` pushed, so a reply can find its entry);
+/// `steps` is the checklist in the order steps first appeared; `console` is a
+/// bounded ring of the most recent subprocess output lines for the tail.
+pub struct OpProgress {
+    pub op: &'static str,
+    pub steps: Vec<ProgressStep>,
+    pub console: Vec<String>,
+}
+
+/// One checklist row in an [`OpProgress`]: a stable `key` to update it in
+/// place, a display `label`, and its current [`StepState`].
+pub struct ProgressStep {
+    pub key: String,
+    pub label: String,
+    pub state: StepState,
+}
+
+/// How many recent console lines an op keeps. The modal shows only the last
+/// couple, but a small backlog is held so the tail doesn't flicker empty
+/// between bursts. Bounds memory against a chatty remote (or a verbose hook).
+const CONSOLE_RING: usize = 64;
+
+impl OpProgress {
+    fn new(op: &'static str) -> Self {
+        Self {
+            op,
+            steps: Vec::new(),
+            console: Vec::new(),
+        }
+    }
+
+    /// Folds one progress event in: a `Step` updates the matching row (or
+    /// appends a new one), a `Console` line joins the ring, dropping the oldest
+    /// past [`CONSOLE_RING`].
+    fn apply(&mut self, event: ProgressEvent) {
+        match event {
+            ProgressEvent::Step { key, label, state } => {
+                if let Some(step) = self.steps.iter_mut().find(|s| s.key == key) {
+                    step.state = state;
+                } else {
+                    self.steps.push(ProgressStep { key, label, state });
+                }
+            }
+            ProgressEvent::Console(line) => {
+                self.console.push(line);
+                if self.console.len() > CONSOLE_RING {
+                    let drop = self.console.len() - CONSOLE_RING;
+                    self.console.drain(0..drop);
+                }
+            }
+        }
     }
 }
 
@@ -306,9 +364,10 @@ impl GitGudApp {
                     t.committing = true;
                 }
                 // A long-running network op opens the progress modal; the
-                // matching reply pops it in `handle_update`.
+                // matching reply pops it in `handle_update`, and
+                // `Update::Progress` fills its checklist meanwhile.
                 if let Some(label) = net_label(&job) {
-                    t.net_ops.push(label);
+                    t.net_ops.push(OpProgress::new(label));
                 }
             }
         }
@@ -407,11 +466,25 @@ impl GitGudApp {
             }
             return;
         };
+        // Progress is a mid-flight stream, not the job's terminal reply: it
+        // doesn't answer the in-flight count or close the op. Fold it into the
+        // matching op's checklist (newest entry with that label) and bail.
+        if let Update::Progress { op, event, .. } = upd {
+            if let Some(p) = self.tabs[idx].net_ops.iter_mut().rev().find(|p| p.op == op) {
+                p.apply(event);
+            }
+            ctx.request_repaint();
+            return;
+        }
+
         self.tabs[idx].in_flight = self.tabs[idx].in_flight.saturating_sub(1);
         // A finished network op (or a divergence that hands off to the
-        // reconcile modal) closes the progress modal; drain its stack entry.
-        if net_done(&upd) {
-            self.tabs[idx].net_ops.pop();
+        // reconcile modal) closes the progress modal; drain the matching stack
+        // entry (the newest with that label, in case ops overlap).
+        if let Some(op) = net_done_op(&upd)
+            && let Some(pos) = self.tabs[idx].net_ops.iter().rposition(|p| p.op == op)
+        {
+            self.tabs[idx].net_ops.remove(pos);
         }
 
         match upd {
@@ -613,6 +686,8 @@ impl GitGudApp {
                     ahead,
                 });
             }
+            // Folded into the matching op above, then returned early.
+            Update::Progress { .. } => unreachable!("Progress is handled before this match"),
         }
     }
 }
@@ -656,17 +731,24 @@ fn net_label(job: &Job) -> Option<&'static str> {
     }
 }
 
-/// Whether an update concludes a long-running network op, so its progress
-/// modal entry should be popped. A `Diverged` reply ends the op too -- it
-/// hands the flow off to the reconcile modal.
-fn net_done(upd: &Update) -> bool {
+/// The op label a terminal update concludes, so its progress-modal entry can
+/// be popped, or `None` for replies that aren't a network op's conclusion. A
+/// `Diverged` reply ends the op too -- it hands the flow off to the reconcile
+/// modal. The labels mirror `net_label` so the right `net_ops` entry is found.
+fn net_done_op(upd: &Update) -> Option<&'static str> {
     match upd {
-        Update::Acted { kind, .. } => matches!(
-            kind,
-            ActionKind::Fetch | ActionKind::Push | ActionKind::Pull | ActionKind::UpdateSubmodules
-        ),
-        Update::Diverged { .. } => true,
-        _ => false,
+        Update::Acted { kind, .. } => match kind {
+            ActionKind::Fetch => Some("FETCH"),
+            ActionKind::Push => Some("PUSH"),
+            ActionKind::Pull => Some("PULL"),
+            ActionKind::UpdateSubmodules => Some("SUBMODULES"),
+            _ => None,
+        },
+        Update::Diverged { kind, .. } => Some(match kind {
+            SyncKind::Push => "PUSH",
+            SyncKind::Pull => "PULL",
+        }),
+        _ => None,
     }
 }
 
@@ -678,7 +760,8 @@ fn update_id(upd: &Update) -> RepoId {
         | Update::Diff { id, .. }
         | Update::Conflict { id, .. }
         | Update::Acted { id, .. }
-        | Update::Diverged { id, .. } => *id,
+        | Update::Diverged { id, .. }
+        | Update::Progress { id, .. } => *id,
     }
 }
 

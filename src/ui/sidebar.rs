@@ -93,7 +93,9 @@ fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         }
         Some(BranchAction::ToggleFolder(path)) => {
             // Absent = expanded, so toggling is remove-or-insert.
-            if !tab.collapsed_folders.remove(&path) {
+            if tab.collapsed_folders.contains(&path) {
+                tab.collapsed_folders.remove(&path);
+            } else {
                 tab.collapsed_folders.insert(path);
             }
         }
@@ -105,7 +107,11 @@ fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 /// switch. Uncommitted changes (checked first) offer Discard & continue; a
 /// merge in progress is exit-only. A clean switch never reaches here.
 fn checkout_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    let t = super::factor(ui.ctx(), Id::new("checkout_flow"), tab.pending_checkout.is_some());
+    let t = super::factor(
+        ui.ctx(),
+        Id::new("checkout_flow"),
+        tab.pending_checkout.is_some(),
+    );
     let Some(branch) = tab.pending_checkout.clone() else {
         return;
     };
@@ -123,8 +129,14 @@ fn checkout_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         return;
     }
 
-    let ((discard, cancel), closed) =
-        super::hud_modal(ui, "checkout_flow", "CHECKOUT BLOCKED", ACCENT, 300.0, t, |ui| {
+    let ((discard, cancel), closed) = super::hud_modal(
+        ui,
+        "checkout_flow",
+        "CHECKOUT BLOCKED",
+        ACCENT,
+        300.0,
+        t,
+        |ui| {
             if dirty {
                 ui.label(format!(
                     "Switch to \"{branch}\" — but you have uncommitted changes."
@@ -148,7 +160,9 @@ fn checkout_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                 })
                 .inner
             } else {
-                ui.label(format!("Can't switch to \"{branch}\" — a merge is in progress."));
+                ui.label(format!(
+                    "Can't switch to \"{branch}\" — a merge is in progress."
+                ));
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new("⚠ Finish or abort the current merge first.")
@@ -163,7 +177,8 @@ fn checkout_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                     .inner;
                 (false, cancel)
             }
-        });
+        },
+    );
 
     if discard {
         jobs.push(Job::Checkout {
@@ -286,7 +301,9 @@ fn merge_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             }
             ui.add_space(14.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let into_current = ui.add(HudButton::new("INTO CURRENT").accent(true)).clicked();
+                let into_current = ui
+                    .add(HudButton::new("INTO CURRENT").accent(true))
+                    .clicked();
                 // Into-selected is meaningless for a remote ref (can't merge
                 // into one), so it's hidden there.
                 let into_selected =
@@ -346,7 +363,11 @@ fn merge_flow_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 /// and CREATE + SWITCH (also check it out). The job fires on confirm or Enter;
 /// clicking away, Escape, or Cancel aborts. An empty name disables both.
 fn confirm_new_branch(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    let t = super::factor(ui.ctx(), Id::new("new_branch"), tab.pending_branch.is_some());
+    let t = super::factor(
+        ui.ctx(),
+        Id::new("new_branch"),
+        tab.pending_branch.is_some(),
+    );
     if tab.pending_branch.is_none() {
         return;
     }

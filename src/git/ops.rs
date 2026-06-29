@@ -8,8 +8,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{BufReader, Read};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{Sender, channel};
 
 use git2::build::CheckoutBuilder;
 use git2::{
@@ -19,9 +21,20 @@ use git2::{
 
 use super::{
     BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey, DiffLine,
-    FileChange, FileDiff, HistoryPage, LineKind, MergeDirection, MergeInfo, RefreshData, RepoMeta,
-    Resolution, SubmoduleInfo, SyncStrategy,
+    FileChange, FileDiff, HistoryPage, LineKind, MergeDirection, MergeInfo, ProgressEvent,
+    RefreshData, RepoMeta, Resolution, StepState, SubmoduleInfo, SyncStrategy,
 };
+
+/// A sink for live progress from a long-running op. The worker hands each
+/// network op one of these; it wraps every event into an `Update::Progress`
+/// and wakes the UI. Defined as a trait-object closure so `ops` stays free of
+/// the channel and egui types -- it just calls `report(event)`.
+pub type Reporter<'a> = &'a mut dyn FnMut(ProgressEvent);
+
+/// Longest console line we keep before flushing it as-is. A subprocess that
+/// never emits a newline (or `\r`) can't grow the line buffer without bound --
+/// the same defensive cap the diff and highlight passes apply to repo content.
+const CONSOLE_LINE_CAP: usize = 8192;
 
 /// Stop collecting diff lines past this point so a pathological diff
 /// (generated file, vendored lockfile) cannot freeze the UI thread's render.
@@ -242,7 +255,12 @@ fn submodules(repo: &Repository) -> Result<Vec<SubmoduleInfo>, String> {
 /// run off the worker thread. The path comes from our own confined snapshot,
 /// but is re-validated here so a future caller can't slip a flag or an escape
 /// through to the CLI.
-pub fn update_submodules(workdir: &Path, path: Option<&str>, init: bool) -> Result<String, String> {
+pub fn update_submodules(
+    workdir: &Path,
+    path: Option<&str>,
+    init: bool,
+    report: Reporter<'_>,
+) -> Result<String, String> {
     if let Some(p) = path
         && (p.starts_with('-') || !is_confined(p))
     {
@@ -257,7 +275,14 @@ pub fn update_submodules(workdir: &Path, path: Option<&str>, init: bool) -> Resu
         args.push("--");
         args.push(p);
     }
-    run_git(workdir, &args, "git submodule update failed")?;
+    run_step(
+        workdir,
+        &args,
+        "git submodule update failed",
+        "submodules",
+        "SUBMODULE UPDATE — init, recursive",
+        report,
+    )?;
     Ok(match path {
         Some(p) => format!("submodule updated — {p}"),
         None => "submodules updated".to_string(),
@@ -712,7 +737,13 @@ pub fn reset_hard(workdir: &Path) -> Result<(), String> {
     run_git(workdir, &["reset", "--hard", "HEAD"], "git reset failed")?;
     run_git(
         workdir,
-        &["submodule", "update", "--recursive", "--force", "--no-fetch"],
+        &[
+            "submodule",
+            "update",
+            "--recursive",
+            "--force",
+            "--no-fetch",
+        ],
         "git submodule update failed",
     )?;
     Ok(())
@@ -797,11 +828,7 @@ fn conflict_count(stdout: &str, stderr: &str) -> Option<usize> {
 /// clean merge submodule pointers are resynced so a moved pointer doesn't
 /// leave the worktree dirty; on conflict the resync waits until the user
 /// commits the resolution.
-pub fn merge(
-    workdir: &Path,
-    branch: &str,
-    direction: MergeDirection,
-) -> Result<String, String> {
+pub fn merge(workdir: &Path, branch: &str, direction: MergeDirection) -> Result<String, String> {
     // Branch names reaching here come from libgit2's ref enumeration, which
     // forbids a leading '-'. Re-check so this value can never be parsed as a
     // git flag if a future caller is less careful.
@@ -1081,9 +1108,17 @@ fn is_confined(path: &str) -> bool {
 }
 
 /// `git fetch --all --prune` via the CLI. Network op -- the worker runs it
-/// on a throwaway thread so it never blocks local jobs.
-pub fn fetch(workdir: &Path) -> Result<String, String> {
-    let (_, stderr) = run_git(workdir, &["fetch", "--all", "--prune"], "git fetch failed")?;
+/// on a throwaway thread so it never blocks local jobs. Streams git's per-ref
+/// output to `report` so the progress modal shows the remotes answering.
+pub fn fetch(workdir: &Path, report: Reporter<'_>) -> Result<String, String> {
+    let (_, stderr) = run_step(
+        workdir,
+        &["fetch", "--all", "--prune"],
+        "git fetch failed",
+        "fetch",
+        "FETCH — all remotes, prune",
+        report,
+    )?;
     let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
     // git prints ref updates ("abc..def  main -> origin/main") to stderr.
     match last_line {
@@ -1107,15 +1142,22 @@ pub enum SyncOutcome {
 /// silently merges): a branch that has diverged from its upstream returns
 /// [`SyncOutcome::Diverged`] for the UI to resolve, while a fast-forwardable
 /// branch just pushes.
-pub fn push(workdir: &Path) -> SyncOutcome {
+pub fn push(workdir: &Path, report: Reporter<'_>) -> SyncOutcome {
     // A brand-new branch has no upstream to diverge from -- push and let -u
     // record the tracking ref.
     if !has_upstream(workdir) {
-        return SyncOutcome::Completed(do_push(workdir));
+        return SyncOutcome::Completed(do_push(workdir, report));
     }
     // Refresh our view of the upstream so the counts below reflect reality,
     // not the last fetch -- origin may have moved since.
-    if let Err(e) = run_git(workdir, &["fetch"], "git fetch failed") {
+    if let Err(e) = run_step(
+        workdir,
+        &["fetch"],
+        "git fetch failed",
+        "probe",
+        "CHECK REMOTE — fetch upstream",
+        report,
+    ) {
         return SyncOutcome::Completed(Err(e));
     }
     match divergence(workdir) {
@@ -1127,10 +1169,10 @@ pub fn push(workdir: &Path) -> SyncOutcome {
         Ok((behind, _)) if behind > 0 => {
             // Strictly behind: nothing of ours to push, just catch up so the
             // branch (and its ahead/behind readout) is current again.
-            SyncOutcome::Completed(fast_forward(workdir))
+            SyncOutcome::Completed(fast_forward(workdir, report))
         }
         // Even with or ahead of the upstream: an ordinary fast-forward push.
-        Ok(_) => SyncOutcome::Completed(do_push(workdir)),
+        Ok(_) => SyncOutcome::Completed(do_push(workdir, report)),
     }
 }
 
@@ -1140,17 +1182,24 @@ pub fn push(workdir: &Path) -> SyncOutcome {
 /// Fast-forwards when it cleanly can; on divergence returns
 /// [`SyncOutcome::Diverged`] so the user chooses merge vs rebase rather than
 /// the app silently creating a merge commit.
-pub fn pull(workdir: &Path) -> SyncOutcome {
+pub fn pull(workdir: &Path, report: Reporter<'_>) -> SyncOutcome {
     if !has_upstream(workdir) {
         return SyncOutcome::Completed(Err("no upstream branch to pull from".to_string()));
     }
-    if let Err(e) = run_git(workdir, &["fetch"], "git fetch failed") {
+    if let Err(e) = run_step(
+        workdir,
+        &["fetch"],
+        "git fetch failed",
+        "probe",
+        "CHECK REMOTE — fetch upstream",
+        report,
+    ) {
         return SyncOutcome::Completed(Err(e));
     }
     match divergence(workdir) {
         Err(e) => SyncOutcome::Completed(Err(e)),
         Ok((behind, ahead)) if behind > 0 && ahead > 0 => SyncOutcome::Diverged { behind, ahead },
-        Ok((behind, _)) if behind > 0 => SyncOutcome::Completed(fast_forward(workdir)),
+        Ok((behind, _)) if behind > 0 => SyncOutcome::Completed(fast_forward(workdir, report)),
         // Already up to date with (or ahead of) the upstream: nothing to pull.
         Ok(_) => SyncOutcome::Completed(Ok("Already up to date.".to_string())),
     }
@@ -1163,16 +1212,17 @@ pub fn integrate(
     workdir: &Path,
     strategy: SyncStrategy,
     push_after: bool,
+    report: Reporter<'_>,
 ) -> Result<String, String> {
     let step = match strategy {
-        SyncStrategy::Merge => merge_upstream(workdir)?,
-        SyncStrategy::Rebase => rebase_upstream(workdir)?,
+        SyncStrategy::Merge => merge_upstream(workdir, report)?,
+        SyncStrategy::Rebase => rebase_upstream(workdir, report)?,
     };
     match step {
         // The branch is reconciled. Push it on if this began as a push.
         IntegrateStep::Done(status) => {
             if push_after {
-                do_push(workdir)
+                do_push(workdir, report)
             } else {
                 Ok(status)
             }
@@ -1194,70 +1244,231 @@ enum IntegrateStep {
 /// `git pull --no-rebase`: fetches and merges the upstream, creating a merge
 /// commit on divergence. A conflict leaves the repo mid-merge -- the conflict
 /// UI drives the resolve-and-commit from there.
-fn merge_upstream(workdir: &Path) -> Result<IntegrateStep, String> {
-    let output = git_output(workdir, &["pull", "--no-rebase"])?;
-    if output.status.success() {
+fn merge_upstream(workdir: &Path, report: Reporter<'_>) -> Result<IntegrateStep, String> {
+    report(ProgressEvent::step(
+        "integrate",
+        "PULL — merge origin",
+        StepState::Running,
+    ));
+    let (stdout, stderr, ok) = stream_git(workdir, &["pull", "--no-rebase"], report)?;
+    if ok {
+        report(ProgressEvent::step(
+            "integrate",
+            "PULL — merge origin",
+            StepState::Done,
+        ));
         return Ok(IntegrateStep::Done(
             "pull complete — merged origin".to_string(),
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     if let Some(n) = conflict_count(&stdout, &stderr) {
+        // Conflicts are an expected, recoverable outcome -- the step ran, the
+        // repo is now mid-merge and the conflict UI takes over.
+        report(ProgressEvent::step(
+            "integrate",
+            "PULL — merge origin",
+            StepState::Done,
+        ));
         return Ok(IntegrateStep::Stopped(match n {
             0 => "merge conflicts — resolve and commit".to_string(),
             n => format!("merge conflicts in {n} file(s) — resolve and commit"),
         }));
     }
+    report(ProgressEvent::step(
+        "integrate",
+        "PULL — merge origin",
+        StepState::Failed,
+    ));
     Err(last_nonempty(&stderr, &stdout, "git pull failed"))
 }
 
 /// `git pull --rebase`: replays local commits on top of the upstream for a
 /// linear history. The app has no rebase-continue UI, so a conflict is aborted
 /// and reported -- the branch is left as it was and the user can pick merge.
-fn rebase_upstream(workdir: &Path) -> Result<IntegrateStep, String> {
-    let output = git_output(workdir, &["pull", "--rebase"])?;
-    if output.status.success() {
+fn rebase_upstream(workdir: &Path, report: Reporter<'_>) -> Result<IntegrateStep, String> {
+    report(ProgressEvent::step(
+        "integrate",
+        "PULL — rebase onto origin",
+        StepState::Running,
+    ));
+    let (stdout, stderr, ok) = stream_git(workdir, &["pull", "--rebase"], report)?;
+    if ok {
+        report(ProgressEvent::step(
+            "integrate",
+            "PULL — rebase onto origin",
+            StepState::Done,
+        ));
         return Ok(IntegrateStep::Done(
             "pull complete — rebased onto origin".to_string(),
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     if conflict_count(&stdout, &stderr).is_some() {
         // Leave no half-finished rebase behind -- there is no UI to continue it.
         let _ = git_output(workdir, &["rebase", "--abort"]);
+        report(ProgressEvent::step(
+            "integrate",
+            "PULL — rebase onto origin",
+            StepState::Done,
+        ));
         return Ok(IntegrateStep::Stopped(
             "rebase hit conflicts and was aborted — try merge instead".to_string(),
         ));
     }
+    report(ProgressEvent::step(
+        "integrate",
+        "PULL — rebase onto origin",
+        StepState::Failed,
+    ));
     Err(last_nonempty(&stderr, &stdout, "git pull --rebase failed"))
 }
 
 /// Pushes HEAD to origin, recording the upstream on a branch's first push.
-fn do_push(workdir: &Path) -> Result<String, String> {
+///
+/// Streams the push so its checklist row shows live transfer progress, and
+/// surfaces the **pre-push hook** as its own step: git runs that hook before it
+/// emits any of its own transfer output, so any line arriving ahead of git's
+/// first recognisable push line (see [`is_push_output`]) is hook output -- the
+/// lint/format/test runners the user wanted to watch. The hook step opens on
+/// the first such line and closes when git's own output begins (or with the
+/// push itself if the hook was the whole story).
+fn do_push(workdir: &Path, report: Reporter<'_>) -> Result<String, String> {
+    report(ProgressEvent::step(
+        "push",
+        "PUSH — origin HEAD",
+        StepState::Running,
+    ));
+
+    // State for the pre-push-hook heuristic, tracked across the streamed lines.
+    let mut hook_open = false;
+    let mut saw_git_output = false;
     // No refspec: git pushes the current branch per the user's `push.default`
     // (the default `simple` pushes HEAD to its upstream of the same name).
     // `--set-upstream` makes the very first push of a new branch also record
     // its tracking ref, so later pushes need no arguments either.
-    let (_, stderr) = run_git(
-        workdir,
-        &["push", "--set-upstream", "origin", "HEAD"],
-        "git push failed",
-    )?;
-    let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
-    match last_line {
-        // "Everything up-to-date" already reads as a full status message.
-        Some(line) if line.trim() == "Everything up-to-date" => Ok(line.trim().to_string()),
-        Some(line) => Ok(format!("push complete — {}", line.trim())),
-        None => Ok("push complete".to_string()),
+    let result = {
+        let mut tap = |event: ProgressEvent| {
+            if let ProgressEvent::Console(line) = &event
+                && !saw_git_output
+            {
+                if is_push_output(line) {
+                    // git's own output has started; close the hook step if open.
+                    saw_git_output = true;
+                    if hook_open {
+                        report(ProgressEvent::step(
+                            "hook",
+                            "PRE-PUSH HOOK",
+                            StepState::Done,
+                        ));
+                    }
+                } else if !hook_open {
+                    // First line and it isn't git's: the pre-push hook is talking.
+                    hook_open = true;
+                    report(ProgressEvent::step(
+                        "hook",
+                        "PRE-PUSH HOOK",
+                        StepState::Running,
+                    ));
+                }
+            }
+            report(event);
+        };
+        stream_git(
+            workdir,
+            &["push", "--set-upstream", "origin", "HEAD"],
+            &mut tap,
+        )
+    };
+
+    match result {
+        Ok((_, stderr, true)) => {
+            // A push that was nothing but hook output (no transfer, e.g. already
+            // up to date) still leaves the hook step open -- close it.
+            if hook_open && !saw_git_output {
+                report(ProgressEvent::step(
+                    "hook",
+                    "PRE-PUSH HOOK",
+                    StepState::Done,
+                ));
+            }
+            report(ProgressEvent::step(
+                "push",
+                "PUSH — origin HEAD",
+                StepState::Done,
+            ));
+            let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
+            match last_line {
+                // "Everything up-to-date" already reads as a full status message.
+                Some(line) if line.trim() == "Everything up-to-date" => Ok(line.trim().to_string()),
+                Some(line) => Ok(format!("push complete — {}", line.trim())),
+                None => Ok("push complete".to_string()),
+            }
+        }
+        Ok((stdout, stderr, false)) => {
+            // A failed push commonly means the pre-push hook rejected it.
+            if hook_open && !saw_git_output {
+                report(ProgressEvent::step(
+                    "hook",
+                    "PRE-PUSH HOOK",
+                    StepState::Failed,
+                ));
+            }
+            report(ProgressEvent::step(
+                "push",
+                "PUSH — origin HEAD",
+                StepState::Failed,
+            ));
+            Err(last_nonempty(&stderr, &stdout, "git push failed"))
+        }
+        Err(e) => {
+            report(ProgressEvent::step(
+                "push",
+                "PUSH — origin HEAD",
+                StepState::Failed,
+            ));
+            Err(e)
+        }
     }
+}
+
+/// True when `line` looks like git's own `push` output rather than a pre-push
+/// hook's. Used to split hook chatter (which always precedes git's transfer)
+/// from the push proper. Heuristic by nature -- a worst-case misclassification
+/// only mislabels a checklist row, never affects the push.
+fn is_push_output(line: &str) -> bool {
+    let l = line.trim_start();
+    l.contains("->") // ref update: "abc..def  main -> main"
+        || [
+            "Enumerating objects",
+            "Counting objects",
+            "Compressing objects",
+            "Delta compression",
+            "Resolving deltas",
+            "Writing objects",
+            "Total ",
+            "remote:",
+            "To ",
+            "* [new",
+            "Everything up-to-date",
+            "Pushing to",
+            "error:",
+            "fatal:",
+            "hint:",
+        ]
+        .iter()
+        .any(|p| l.starts_with(p))
 }
 
 /// Fast-forwards HEAD onto its already-fetched upstream. Used when the local
 /// branch is strictly behind, so no merge commit is possible or needed.
-fn fast_forward(workdir: &Path) -> Result<String, String> {
-    let (stdout, _) = run_git(workdir, &["merge", "--ff-only", "@{u}"], "git merge failed")?;
+fn fast_forward(workdir: &Path, report: Reporter<'_>) -> Result<String, String> {
+    let (stdout, _) = run_step(
+        workdir,
+        &["merge", "--ff-only", "@{u}"],
+        "git merge failed",
+        "ff",
+        "FAST-FORWARD — catch up to upstream",
+        report,
+    )?;
     let first_line = stdout.lines().find(|l| !l.trim().is_empty());
     match first_line {
         Some(line) if line.trim() == "Already up to date." => Ok(line.trim().to_string()),
@@ -1355,6 +1566,122 @@ fn run_git(workdir: &Path, args: &[&str], fail_msg: &str) -> Result<(String, Str
         return Err(last_line.unwrap_or(fail_msg).to_string());
     }
     Ok((String::from_utf8_lossy(&output.stdout).into_owned(), stderr))
+}
+
+/// Runs a git subprocess while streaming its output to `report` line by line,
+/// so a multi-second op (a push to a slow remote, a hook running tests) reads
+/// as work underway instead of a frozen spinner. Returns the full
+/// `(stdout, stderr, success)` once the process exits, same shape callers parse
+/// from a buffered run.
+///
+/// Output is split on **both** `\n` and `\r`: git writes transfer progress
+/// ("Writing objects:  40%") as carriage-return redraws, so splitting on `\r`
+/// too surfaces each redraw as its own console line as it happens. Bytes become
+/// `String` only via `from_utf8_lossy`, per the security invariants, and each
+/// line is capped at [`CONSOLE_LINE_CAP`].
+fn stream_git(
+    workdir: &Path,
+    args: &[&str],
+    report: Reporter<'_>,
+) -> Result<(String, String, bool), String> {
+    let mut child = git_cmd(workdir)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "git CLI not found on PATH".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+    let stdout = child.stdout.take().ok_or("failed to capture git stdout")?;
+    let stderr = child.stderr.take().ok_or("failed to capture git stderr")?;
+
+    // git interleaves progress on stderr with results on stdout; read both on
+    // their own threads and merge the lines over a channel. `true` tags a
+    // stdout line. The loop ends when both readers drop their sender.
+    let (tx, rx) = channel::<(bool, String)>();
+    let tx_err = tx.clone();
+    let h_out = std::thread::spawn(move || pump(stdout, true, &tx));
+    let h_err = std::thread::spawn(move || pump(stderr, false, &tx_err));
+
+    let mut out = String::new();
+    let mut err = String::new();
+    for (is_stdout, line) in rx {
+        if is_stdout {
+            out.push_str(&line);
+            out.push('\n');
+        } else {
+            err.push_str(&line);
+            err.push('\n');
+        }
+        if !line.trim().is_empty() {
+            report(ProgressEvent::Console(line));
+        }
+    }
+    let _ = h_out.join();
+    let _ = h_err.join();
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+    Ok((out, err, status.success()))
+}
+
+/// Reader-thread body: split one pipe into lines on `\n`/`\r` and send each
+/// over `tx`, tagged `is_stdout`. A line that overruns [`CONSOLE_LINE_CAP`] is
+/// flushed early so a newline-less stream can't grow the buffer without bound.
+fn pump<R: Read>(reader: R, is_stdout: bool, tx: &Sender<(bool, String)>) {
+    let mut buf: Vec<u8> = Vec::new();
+    for byte in BufReader::new(reader).bytes() {
+        let Ok(b) = byte else { break };
+        if b == b'\n' || b == b'\r' || buf.len() >= CONSOLE_LINE_CAP {
+            flush_line(&mut buf, is_stdout, tx);
+            if b != b'\n' && b != b'\r' {
+                buf.push(b);
+            }
+        } else {
+            buf.push(b);
+        }
+    }
+    flush_line(&mut buf, is_stdout, tx);
+}
+
+/// Sends `buf` as one line (lossy UTF-8) and clears it; no-op when empty.
+fn flush_line(buf: &mut Vec<u8>, is_stdout: bool, tx: &Sender<(bool, String)>) {
+    if !buf.is_empty() {
+        let _ = tx.send((is_stdout, String::from_utf8_lossy(buf).into_owned()));
+        buf.clear();
+    }
+}
+
+/// Runs one streamed git invocation as a single checklist step: emits the step
+/// `Running`, then `Done`/`Failed` from the exit status. Returns the captured
+/// `(stdout, stderr)` on success, or the last error line on failure -- the same
+/// contract as [`run_git`], but with live output and a checklist row.
+fn run_step(
+    workdir: &Path,
+    args: &[&str],
+    fail_msg: &str,
+    key: &str,
+    label: &str,
+    report: Reporter<'_>,
+) -> Result<(String, String), String> {
+    report(ProgressEvent::step(key, label, StepState::Running));
+    match stream_git(workdir, args, report) {
+        Ok((out, err, true)) => {
+            report(ProgressEvent::step(key, label, StepState::Done));
+            Ok((out, err))
+        }
+        Ok((out, err, false)) => {
+            report(ProgressEvent::step(key, label, StepState::Failed));
+            Err(last_nonempty(&err, &out, fail_msg))
+        }
+        Err(e) => {
+            report(ProgressEvent::step(key, label, StepState::Failed));
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

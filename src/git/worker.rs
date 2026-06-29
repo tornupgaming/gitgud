@@ -233,7 +233,9 @@ fn run_job(
             let tx = upd_tx.clone();
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                let result = ops::fetch(&workdir);
+                let mut report = reporter(&tx, &ctx, id, "FETCH");
+                let result = ops::fetch(&workdir, &mut report);
+                drop(report);
                 let _ = tx.send(Update::Acted {
                     id,
                     kind: ActionKind::Fetch,
@@ -252,7 +254,10 @@ fn run_job(
             let tx = upd_tx.clone();
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(sync_update(id, SyncKind::Push, ops::push(&workdir)));
+                let mut report = reporter(&tx, &ctx, id, "PUSH");
+                let outcome = ops::push(&workdir, &mut report);
+                drop(report);
+                let _ = tx.send(sync_update(id, SyncKind::Push, outcome));
                 ctx.request_repaint();
             });
             None
@@ -264,7 +269,10 @@ fn run_job(
             let tx = upd_tx.clone();
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(sync_update(id, SyncKind::Pull, ops::pull(&workdir)));
+                let mut report = reporter(&tx, &ctx, id, "PULL");
+                let outcome = ops::pull(&workdir, &mut report);
+                drop(report);
+                let _ = tx.send(sync_update(id, SyncKind::Pull, outcome));
                 ctx.request_repaint();
             });
             None
@@ -277,7 +285,9 @@ fn run_job(
             let tx = upd_tx.clone();
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                let result = ops::update_submodules(&workdir, path.as_deref(), init);
+                let mut report = reporter(&tx, &ctx, id, "SUBMODULES");
+                let result = ops::update_submodules(&workdir, path.as_deref(), init, &mut report);
+                drop(report);
                 let _ = tx.send(Update::Acted {
                     id,
                     kind: ActionKind::UpdateSubmodules,
@@ -299,7 +309,12 @@ fn run_job(
             let tx = upd_tx.clone();
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                let result = ops::integrate(&workdir, strategy, push_after);
+                // Report under the label of the op that began the flow so the
+                // progress modal reads as the same PUSH/PULL throughout.
+                let op = if push_after { "PUSH" } else { "PULL" };
+                let mut report = reporter(&tx, &ctx, id, op);
+                let result = ops::integrate(&workdir, strategy, push_after, &mut report);
+                drop(report);
                 let kind = if push_after {
                     ActionKind::Push
                 } else {
@@ -310,6 +325,23 @@ fn run_job(
             });
             None
         }
+    }
+}
+
+/// Builds the progress sink handed to a network op: each event it emits is
+/// wrapped in an [`Update::Progress`] tagged with the op label and pushed to
+/// the UI, then the UI is woken so the modal repaints mid-flight. Borrows the
+/// thread's own `tx`/`ctx`, so it must be dropped before the final reply is
+/// sent on the same `tx`.
+fn reporter<'a>(
+    tx: &'a Sender<Update>,
+    ctx: &'a eframe::egui::Context,
+    id: RepoId,
+    op: &'static str,
+) -> impl FnMut(super::ProgressEvent) + 'a {
+    move |event| {
+        let _ = tx.send(Update::Progress { id, op, event });
+        ctx.request_repaint();
     }
 }
 
