@@ -1121,6 +1121,7 @@ pub fn initialized_submodule_paths(repo: &Repository) -> Vec<String> {
     let Ok(subs) = repo.submodules() else {
         return Vec::new();
     };
+    let workdir = repo.workdir();
     subs.into_iter()
         .filter_map(|sm| {
             let path = sm.path().to_string_lossy().into_owned();
@@ -1128,10 +1129,14 @@ pub fn initialized_submodule_paths(repo: &Repository) -> Vec<String> {
                 return None;
             }
             let name = sm.name().ok()?;
-            // `Ignore::Dirty` skips the working-tree scan we don't need here --
-            // we only care whether the submodule is checked out at all.
-            let st = repo.submodule_status(name, SubmoduleIgnore::Dirty).ok()?;
-            (!st.contains(SubmoduleStatus::WD_UNINITIALIZED)).then_some(path)
+            let st = repo.submodule_status(name, SubmoduleIgnore::None).ok()?;
+            if st.contains(SubmoduleStatus::WD_UNINITIALIZED) {
+                return None;
+            }
+            // The submodule must actually be checked out on disk: `git -C` into
+            // a missing directory aborts with "cannot change to ...". This guards
+            // against a registered-but-absent submodule reaching a fetch.
+            workdir?.join(&path).is_dir().then_some(path)
         })
         .collect()
 }
@@ -1253,6 +1258,11 @@ fn fetch_super(workdir: &Path, tx: &Sender<ProgressEvent>) -> Result<String, Str
 /// never propagated: the superproject fetch stands on its own and a stale
 /// submodule is recoverable. `git_cmd`'s hardening and the confined `path`
 /// still apply.
+///
+/// `--recurse-submodules=no`: we drive every submodule fetch ourselves, so the
+/// per-submodule fetch must not also recurse into *nested* submodules. Letting
+/// it would resurrect the serial on-demand walk we replaced -- and a nested
+/// submodule that isn't checked out makes git abort with "cannot change to ...".
 fn fetch_one_submodule(parent: &Path, path: &str, tx: &Sender<ProgressEvent>) {
     let sub_dir = parent.join(path);
     let key = sub_step_key(path);
@@ -1260,7 +1270,11 @@ fn fetch_one_submodule(parent: &Path, path: &str, tx: &Sender<ProgressEvent>) {
     let mut sink = |event: ProgressEvent| {
         let _ = tx.send(event);
     };
-    let state = match stream_git(&sub_dir, &["fetch", "--prune"], &mut sink) {
+    let state = match stream_git(
+        &sub_dir,
+        &["fetch", "--prune", "--recurse-submodules=no"],
+        &mut sink,
+    ) {
         Ok((_, _, true)) => StepState::Done,
         // The console tail already carries git's stderr, so the failure reason
         // is visible; the row just flips red (the label can't change on re-send).
