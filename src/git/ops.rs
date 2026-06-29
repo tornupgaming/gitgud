@@ -1107,24 +1107,159 @@ fn is_confined(path: &str) -> bool {
         .all(|c| matches!(c, Component::Normal(_)))
 }
 
-/// `git fetch --all --prune` via the CLI. Network op -- the worker runs it
-/// on a throwaway thread so it never blocks local jobs. Streams git's per-ref
-/// output to `report` so the progress modal shows the remotes answering.
+/// Fetches the superproject, then every initialized submodule in parallel.
+/// Network op -- the worker runs it on a throwaway thread so it never blocks
+/// local jobs. Streams git's per-ref output to `report` so the progress modal
+/// shows the remotes answering.
+///
+/// The superproject fetch runs with `--recurse-submodules=no`: git's default
+/// `on-demand` recursion walks the submodules *serially*, which is the slow
+/// path on a repo with many of them. We skip it and fan the submodule fetches
+/// out across a bounded thread pool instead -- see [`fetch_submodules`].
 pub fn fetch(workdir: &Path, report: Reporter<'_>) -> Result<String, String> {
     let (_, stderr) = run_step(
         workdir,
-        &["fetch", "--all", "--prune"],
+        &["fetch", "--all", "--prune", "--recurse-submodules=no"],
         "git fetch failed",
         "fetch",
         "FETCH — all remotes, prune",
         report,
     )?;
+
+    // Each initialized submodule gets its own fetch, parallelised and shown as
+    // its own checklist row. A submodule failure is best-effort (the row turns
+    // red, the console carries the reason) and does not fail the whole fetch --
+    // git's own on-demand recursion only warns, too.
+    let subs = initialized_submodules(workdir);
+    if !subs.is_empty() {
+        fetch_submodules(workdir, &subs, report);
+    }
+
     let last_line = stderr.lines().rev().find(|l| !l.trim().is_empty());
     // git prints ref updates ("abc..def  main -> origin/main") to stderr.
     match last_line {
         Some(line) if stderr.contains("->") => Ok(format!("fetch complete — {}", line.trim())),
         _ => Ok("fetch complete".to_string()),
     }
+}
+
+/// How many submodule fetches run at once. Fetch is network-bound, so we go a
+/// little past the CPU count, but a hard cap keeps a repo with hundreds of
+/// submodules from spawning hundreds of git processes (and credential lookups)
+/// at once. The pool is sized to `min(this, submodule count)`.
+const SUBMODULE_FETCH_CONCURRENCY: usize = 8;
+
+/// Repo-relative paths of every *initialized* submodule, parsed from
+/// `git submodule status`. The leading status char flags uninitialized
+/// submodules (`-`), which have no local clone to fetch into and are skipped.
+/// Paths that would escape the worktree (a crafted `.gitmodules`) are dropped
+/// here as defence in depth before they ever reach a `git -C` invocation.
+fn initialized_submodules(workdir: &Path) -> Vec<String> {
+    // A repo with no submodules prints nothing; a failure (no .gitmodules,
+    // ancient git) just means "nothing to fetch" -- never fatal to the fetch.
+    let Ok((stdout, _)) = run_git(
+        workdir,
+        &["submodule", "status"],
+        "git submodule status failed",
+    ) else {
+        return Vec::new();
+    };
+    stdout
+        .lines()
+        .filter_map(|line| {
+            // Format: "<status><sha> <path>[ (<describe>)]". The status char is
+            // glued to the sha, so strip it before splitting on whitespace.
+            if line.starts_with('-') {
+                return None; // uninitialized: no checkout to fetch into
+            }
+            let path = line.get(1..)?.split_whitespace().nth(1)?;
+            (!path.starts_with('-') && is_confined(path)).then(|| path.to_string())
+        })
+        .collect()
+}
+
+/// Fetches each submodule in `subs` concurrently across a bounded pool, routing
+/// every worker's progress back through `report`.
+///
+/// The wrinkle: `report` is a single-thread `&mut dyn FnMut`, so the worker
+/// threads can't touch it. They emit [`ProgressEvent`]s into an mpsc channel
+/// instead; this thread (the one that already owns `report`) drains the channel
+/// and forwards each event. So the reporter stays single-threaded while the
+/// actual `git fetch` work runs in parallel -- no locks on the reporter.
+fn fetch_submodules(workdir: &Path, subs: &[String], report: Reporter<'_>) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Announce the full list up front so the modal shows every submodule (and
+    // thus the scope of the fetch) immediately, not as rows trickle in. The UI
+    // keeps a step's first label and only updates its state on re-send, so the
+    // Done/Failed events below reuse this exact label.
+    for path in subs {
+        report(ProgressEvent::step(
+            &sub_step_key(path),
+            &format!("SUBMODULE — {path}"),
+            StepState::Running,
+        ));
+    }
+
+    let (tx, rx) = channel::<ProgressEvent>();
+    let next = Arc::new(AtomicUsize::new(0));
+    let subs: Arc<[String]> = Arc::from(subs.to_vec());
+    let workdir = workdir.to_path_buf();
+
+    let workers = SUBMODULE_FETCH_CONCURRENCY.min(subs.len());
+    let mut handles = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let next = Arc::clone(&next);
+        let subs = Arc::clone(&subs);
+        let tx = tx.clone();
+        let workdir = workdir.clone();
+        handles.push(std::thread::spawn(move || {
+            // Each worker claims submodules off a shared counter until the slice
+            // is exhausted -- a tiny work-stealing queue with no extra deps.
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(path) = subs.get(i) else { break };
+                fetch_one_submodule(&workdir, path, &tx);
+            }
+        }));
+    }
+    // Drop this thread's own handle so `rx` closes once every worker has exited.
+    drop(tx);
+
+    // Forward each event on the owning thread -- the only one that calls `report`.
+    for event in rx {
+        report(event);
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
+
+/// Fetches one submodule's default remote, streaming its output as console
+/// lines and closing its checklist row Done/Failed. Errors are reported but
+/// never propagated: the parent fetch already succeeded and a stale submodule
+/// is recoverable. `git_cmd`'s hardening and the confined `path` still apply.
+fn fetch_one_submodule(parent: &Path, path: &str, tx: &Sender<ProgressEvent>) {
+    let sub_dir = parent.join(path);
+    let key = sub_step_key(path);
+    let label = format!("SUBMODULE — {path}");
+    let mut sink = |event: ProgressEvent| {
+        let _ = tx.send(event);
+    };
+    let state = match stream_git(&sub_dir, &["fetch", "--prune"], &mut sink) {
+        Ok((_, _, true)) => StepState::Done,
+        // The console tail already carries git's stderr, so the failure reason
+        // is visible; the row just flips red (the label can't change on re-send).
+        Ok(_) | Err(_) => StepState::Failed,
+    };
+    let _ = tx.send(ProgressEvent::step(&key, &label, state));
+}
+
+/// Stable checklist-row key for a submodule's fetch step, namespaced so it
+/// never collides with the superproject's own `fetch` row.
+fn sub_step_key(path: &str) -> String {
+    format!("submodule:{path}")
 }
 
 /// What a push/pull probe decided. `Completed` means the op ran (or failed)
