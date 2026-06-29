@@ -228,13 +228,17 @@ fn run_job(
         Job::Fetch { id } => {
             // Network can take seconds; run it on its own thread so local
             // jobs (stage, refresh) are not stuck behind it in the queue.
-            let (_, workdir) = repos.get(&id)?;
+            let (repo, workdir) = repos.get(&id)?;
+            // Enumerate submodules here, in-process via libgit2 while we still
+            // hold the repo handle -- fast, and it lets `ops::fetch` show every
+            // submodule row at once instead of stalling on `git submodule status`.
+            let subs = ops::initialized_submodule_paths(repo);
             let workdir = workdir.clone();
             let tx = upd_tx.clone();
             let ctx = egui_ctx.clone();
             std::thread::spawn(move || {
                 let mut report = reporter(&tx, &ctx, id, "FETCH");
-                let result = ops::fetch(&workdir, &mut report);
+                let result = ops::fetch(&workdir, &subs, &mut report);
                 drop(report);
                 let _ = tx.send(Update::Acted {
                     id,
