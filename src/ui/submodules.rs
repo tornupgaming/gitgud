@@ -3,9 +3,9 @@
 //! commit moving) surface separately as `ChangeKind::Submodule` rows in the
 //! working tree; this panel is the registry view and the action surface.
 
-use eframe::egui::{Align2, CornerRadius, ScrollArea, Sense, Stroke, TextStyle, Ui, pos2, vec2};
+use eframe::egui::{Align2, CornerRadius, Sense, Stroke, TextStyle, Ui, pos2, vec2};
 
-use super::{HudButton, module, truncate_left};
+use super::{HudButton, module, truncate_left, vscroll};
 use crate::app::RepoTab;
 use crate::git::Job;
 use crate::theme::{AMBER, BG3, DIM, GREEN, PURPLE};
@@ -34,9 +34,7 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             action = Some(SubAction::Update(None));
         }
         ui.add_space(6.0);
-        ScrollArea::vertical()
-            .id_salt("submodules")
-            .auto_shrink([false, false])
+        vscroll("submodules")
             .show(ui, |ui| {
                 if let Some(a) = rows(ui, tab) {
                     action = Some(a);

@@ -82,15 +82,31 @@ fn install_fonts(ctx: &egui::Context) {
             "../assets/fonts/Rajdhani-SemiBold.ttf"
         ))),
     );
-    // Rajdhani first, then egui's defaults stay as fallback for the symbol
-    // glyphs (arrows, geometric shapes) Rajdhani doesn't cover.
+    // A trimmed DejaVu Sans subset carrying just the symbol glyphs we paint as
+    // icons (arrows, triangles, check/cross, warning, reload). egui's bundled
+    // fonts cover only some of these, so labels like "↑ PUSH", "↓ PULL", the
+    // ahead/behind chips, "▼ LOAD MORE" and the progress check/cross rendered
+    // as tofu boxes. Appended LAST in every family so it only fills the gaps --
+    // glyphs the earlier fonts already cover are untouched.
+    fonts.font_data.insert(
+        "icons".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../assets/fonts/GitGudIcons.ttf"
+        ))),
+    );
+    // Rajdhani first, then egui's defaults, then our icon subset as the final
+    // fallback for the symbol glyphs (arrows, geometric shapes) the others lack.
     let prop = fonts.families.entry(FontFamily::Proportional).or_default();
     prop.insert(0, "rajdhani-medium".to_owned());
+    prop.push("icons".to_owned());
     let mut display = prop.clone();
     display[0] = "rajdhani-semibold".to_owned();
     fonts
         .families
         .insert(FontFamily::Name(DISPLAY_FAMILY.into()), display);
+    // Monospace is left alone: the diff viewer's column and gutter math assumes
+    // every monospace glyph shares one width, which a proportional fallback
+    // would break. The icon glyphs only appear in proportional UI chrome.
     ctx.set_fonts(fonts);
 }
 

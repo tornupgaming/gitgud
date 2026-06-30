@@ -766,6 +766,29 @@ fn update_id(upd: &Update) -> RepoId {
 }
 
 impl eframe::App for GitGudApp {
+    /// Smooth out trackpad scrolling. winit reports a high-resolution trackpad
+    /// as `Line` wheel deltas with fractional counts, and egui then re-smooths
+    /// every `Line` event (a ~0.1s exponential ramp) on top of the momentum the
+    /// OS already applies. The two inertias fight: a scroll decelerates to a
+    /// stop, then the OS momentum stream restarts it. We reclassify the
+    /// high-resolution events -- a fractional line count, since a discrete mouse
+    /// wheel only ever reports whole notches -- as already-smooth `Point`
+    /// deltas, scaled by the same line speed so scroll distance and ctrl-scroll
+    /// zoom are unchanged. Genuine wheel notches stay on the `Line` path, where
+    /// egui's smoothing of the big discrete steps is wanted.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let line_px = ctx.options(|o| o.input_options.line_scroll_speed);
+        for ev in &mut raw_input.events {
+            if let egui::Event::MouseWheel { unit, delta, .. } = ev
+                && *unit == egui::MouseWheelUnit::Line
+                && (delta.x.fract() != 0.0 || delta.y.fract() != 0.0)
+            {
+                *delta *= line_px;
+                *unit = egui::MouseWheelUnit::Point;
+            }
+        }
+    }
+
     /// One frame: drain worker updates, translate input and panel clicks
     /// into jobs, lay out the HUD, send the collected jobs after layout.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -903,7 +926,7 @@ impl eframe::App for GitGudApp {
             let tab = &mut self.tabs[self.active];
             Panel::left("ops")
                 .resizable(true)
-                .default_size(240.0)
+                .default_size(300.0)
                 .frame(Frame::new().inner_margin(Margin {
                     left: 10,
                     right: 4,

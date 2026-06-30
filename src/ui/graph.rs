@@ -2,11 +2,11 @@
 //! with a WIP row, ref chips, and load-more paging.
 
 use eframe::egui::{
-    Align2, Color32, CornerRadius, Painter, Rect, ScrollArea, Sense, Shape, Stroke, StrokeKind,
+    Align2, Color32, CornerRadius, Painter, Rect, Sense, Shape, Stroke, StrokeKind,
     TextStyle, Ui, epaint::CubicBezierShape, pos2, vec2,
 };
 
-use super::{HudButton, module, rel_time, text_width, truncate_right};
+use super::{HudButton, module, rel_time, text_width, truncate_right, vscroll};
 use crate::app::{NewBranch, RepoTab};
 use crate::git::graph::Edge;
 use crate::git::{DiffKey, Job};
@@ -68,9 +68,7 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         if tab.history_done { "" } else { "+" }
     );
     module(ui, None, "COMMIT GRAPH", &readout, |ui| {
-        ScrollArea::vertical()
-            .id_salt("graph")
-            .auto_shrink([false, false])
+        vscroll("graph")
             .show_rows(ui, row_h, total, |ui, range| {
                 let first = range.start;
                 for i in range {

@@ -6,12 +6,12 @@
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Layout, Painter, Rect, ScrollArea, Sense,
+    Align, Align2, Color32, CornerRadius, FontId, Layout, Painter, Rect, Sense,
     Spinner, Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
 };
 
 use super::highlight::{LineHighlighter, Spans};
-use super::{HudButton, module, text_width, truncate_left};
+use super::{HudButton, module, text_width, truncate_left, vscroll};
 use crate::app::RepoTab;
 use crate::git::{ConflictFile, ConflictSegment, Job, Resolution};
 use crate::theme::{self, ACCENT, BG2, BORDER, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
@@ -336,9 +336,7 @@ fn body(ui: &mut Ui, rows: &[Row], choices: &mut [Choice], ours_label: &str, the
     let row_h = ui.text_style_height(&TextStyle::Monospace) + 2.0 + ui.spacing().item_spacing.y;
     ui.spacing_mut().item_spacing.y = 0.0;
 
-    ScrollArea::vertical()
-        .id_salt("conflict")
-        .auto_shrink([false, false])
+    vscroll("conflict")
         .show_rows(ui, row_h, rows.len(), |ui, range| {
             for i in range {
                 let (rect, _) =

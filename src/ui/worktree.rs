@@ -4,11 +4,11 @@
 
 use eframe::egui::{
     Align, Align2, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Panel, Rect, RichText,
-    ScrollArea, Sense, Spinner, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
+    Sense, Spinner, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
 use super::diff::DiffView;
-use super::{HudButton, module, rel_time, sub_label, truncate_left};
+use super::{HudButton, module, rel_time, sub_label, truncate_left, vscroll};
 use crate::app::RepoTab;
 use crate::git::{ChangeKind, DiffKey, Job};
 use crate::theme::{self, ACCENT, AMBER, BG3, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
@@ -209,9 +209,7 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
         let mut open: Option<String> = None;
         let font = TextStyle::Body.resolve(ui.style());
         let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
-        ScrollArea::vertical()
-            .id_salt("commit_files")
-            .auto_shrink([false, false])
+        vscroll("commit_files")
             .show(ui, |ui| {
                 for f in &data.files {
                     let (rect, resp) =
@@ -328,9 +326,7 @@ fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 }
 
 fn changes(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    ScrollArea::vertical()
-        .id_salt("changes")
-        .auto_shrink([false, false])
+    vscroll("changes")
         .show(ui, |ui| {
             let staged_label = format!("STAGED · {:02}", tab.staged.len());
             let any_staged = !tab.staged.is_empty();

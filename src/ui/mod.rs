@@ -17,7 +17,10 @@ pub(crate) use reveal::{factor, hud_menu, hud_modal};
 pub use shell::{TopBarAction, empty_state, status_bar, top_bar};
 pub use widgets::HudButton;
 
-use eframe::egui::{Align2, FontId, Layout, Rect, Sense, Stroke, Ui, UiBuilder, pos2, vec2};
+use eframe::egui::{
+    Align2, FontId, Layout, Rect, ScrollArea, Sense, Stroke, Ui, UiBuilder,
+    containers::scroll_area::ScrollSource, pos2, vec2,
+};
 
 use crate::theme::{self, ACCENT, BG0, BG1, BG2, BG3, DIM};
 
@@ -25,6 +28,18 @@ use crate::theme::{self, ACCENT, BG0, BG1, BG2, BG3, DIM};
 const MODULE_CHAMFER: f32 = 10.0;
 /// Height of a module's title band.
 const BAND_H: f32 = 26.0;
+
+/// A vertical scroll area configured the way every panel wants it: filling its
+/// space (no auto-shrink) and scrolled only by the wheel or the scrollbar. We
+/// drop egui's drag-to-scroll source -- a touch-screen affordance that on
+/// desktop just lets a stray click-drag fling the list (and adds a second,
+/// kinetic, inertia on top of the wheel). `id_salt` namespaces the offset.
+pub(crate) fn vscroll(id_salt: &str) -> ScrollArea {
+    ScrollArea::vertical()
+        .id_salt(id_salt)
+        .scroll_source(ScrollSource::SCROLL_BAR | ScrollSource::MOUSE_WHEEL)
+        .auto_shrink([false, false])
+}
 
 /// A floating HUD module: chamfered plate, glowing border, title band with
 /// letter-spaced caps and a right-aligned readout, content below. Every panel

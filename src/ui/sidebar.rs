@@ -4,10 +4,10 @@ use std::collections::HashSet;
 
 use eframe::egui::{
     Align, Align2, CentralPanel, CornerRadius, Frame, Id, Key, Layout, Margin, Painter, Panel,
-    Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
+    Pos2, Rect, RichText, Sense, Shape, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
-use super::{HudButton, module, submodules};
+use super::{HudButton, module, submodules, vscroll};
 use crate::app::{NewBranch, PendingMerge, RepoTab};
 use crate::git::{BranchInfo, Job, MergeDirection};
 use crate::theme::{self, ACCENT, AMBER, BG3, DIM, GREEN, PURPLE, RED, TEXT};
@@ -58,9 +58,7 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     let readout = format!("{:02}", tab.branches.len());
     let action = module(ui, None, "BRANCHES", &readout, |ui| {
-        ScrollArea::vertical()
-            .id_salt("branches")
-            .auto_shrink([false, false])
+        vscroll("branches")
             .show(ui, |ui| branches(ui, tab))
             .inner
     });

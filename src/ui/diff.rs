@@ -5,12 +5,12 @@
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
-    Align, Align2, CornerRadius, Layout, Rect, ScrollArea, Sense, Spinner, Stroke, StrokeKind,
+    Align, Align2, CornerRadius, Layout, Rect, Sense, Spinner, Stroke, StrokeKind,
     TextStyle, Ui, pos2, vec2,
 };
 
 use super::highlight::{LineHighlighter, Spans};
-use super::{HudButton, char_w, module, text_width, truncate_right};
+use super::{HudButton, char_w, module, text_width, truncate_right, vscroll};
 use crate::app::RepoTab;
 use crate::git::{DiffData, DiffKey, DiffLine, LineKind};
 use crate::theme::{self, ACCENT, AMBER, BG2, BORDER, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
@@ -233,9 +233,7 @@ fn body(ui: &mut Ui, view: &DiffView) {
     let cw = char_w(ui, &font);
     let gutter_w = cw * 2.0 * GUTTER_CHARS + 16.0;
 
-    ScrollArea::vertical()
-        .id_salt("diff")
-        .auto_shrink([false, false])
+    vscroll("diff")
         .show_rows(ui, row_h, view.rows.len(), |ui, range| {
             for i in range {
                 let (rect, _) =
