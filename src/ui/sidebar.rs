@@ -1,19 +1,14 @@
 //! Left "ops" column: the BRANCHES module and its checkout confirm flow.
 
-use std::collections::HashSet;
-
 use eframe::egui::{
-    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Key, Layout, Margin, Painter, Panel,
-    Pos2, Rect, RichText, Sense, Shape, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
+    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Key, Layout, Margin, Panel, RichText,
+    Sense, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
-use super::{HudButton, module, submodules, vscroll};
+use super::{HudButton, module, submodules, tree, vscroll};
 use crate::app::{NewBranch, PendingMerge, RepoTab};
-use crate::git::{BranchInfo, Job, MergeDirection};
+use crate::git::{Job, MergeDirection};
 use crate::theme::{self, ACCENT, AMBER, BG3, DIM, GREEN, PURPLE, RED, TEXT};
-
-/// Horizontal step per tree depth level.
-const INDENT: f32 = 14.0;
 
 /// What the user asked of a branch row: a double-click runs the Checkout Flow,
 /// the right-click menu can merge that row or create a new branch from its tip,
@@ -416,190 +411,6 @@ fn confirm_new_branch(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     }
 }
 
-/// A node in the branch tree. A leaf points back into `tab.branches` by index;
-/// a folder owns an ordered child list (which may mix folders and leaves).
-enum Node {
-    Leaf(usize),
-    Folder {
-        name: String,
-        /// Full `/`-joined path, the collapse-state key (`origin/feature`).
-        path: String,
-        children: Vec<Node>,
-    },
-}
-
-/// Inserts one branch -- pre-split into `/` segments -- into the tree, creating
-/// folders along the way. The flat list is name-sorted, so all branches under a
-/// folder are contiguous and the live folder is whichever matching one sits
-/// nearest the end; scanning from the back finds it.
-fn insert(level: &mut Vec<Node>, segs: &[&str], prefix: &str, idx: usize) {
-    if segs.len() == 1 {
-        level.push(Node::Leaf(idx));
-        return;
-    }
-    let folder = segs[0];
-    let path = if prefix.is_empty() {
-        folder.to_string()
-    } else {
-        format!("{prefix}/{folder}")
-    };
-    let pos = level
-        .iter()
-        .rposition(|n| matches!(n, Node::Folder { name, .. } if name == folder));
-    match pos {
-        Some(p) => {
-            if let Node::Folder { children, .. } = &mut level[p] {
-                insert(children, &segs[1..], &path, idx);
-            }
-        }
-        None => {
-            let mut children = Vec::new();
-            insert(&mut children, &segs[1..], &path, idx);
-            level.push(Node::Folder {
-                name: folder.to_string(),
-                path,
-                children,
-            });
-        }
-    }
-}
-
-/// Groups the already-ordered flat branch list into a tree by `/` segments.
-/// Child order is the branch order, so folders and leaves interleave by name.
-fn build_tree(branches: &[BranchInfo]) -> Vec<Node> {
-    let mut roots = Vec::new();
-    for (i, b) in branches.iter().enumerate() {
-        let segs: Vec<&str> = b.name.split('/').collect();
-        insert(&mut roots, &segs, "", i);
-    }
-    roots
-}
-
-/// One drawn line of the tree, after collapsed folders have hidden their
-/// subtrees. `depth` drives indentation; `lanes`/`is_last` drive the guide
-/// lines (see `connectors`).
-#[derive(Clone, Copy)]
-struct Row<'a> {
-    depth: usize,
-    /// Bit `c` set = an ancestor's subtree continues past this row, so a
-    /// vertical pass-through line is drawn in indent column `c`.
-    lanes: u64,
-    /// This node is the last child of its parent, so its elbow is an `L`
-    /// rather than a `T`.
-    is_last: bool,
-    kind: RowKind<'a>,
-}
-
-#[derive(Clone, Copy)]
-enum RowKind<'a> {
-    Folder {
-        name: &'a str,
-        path: &'a str,
-        collapsed: bool,
-    },
-    Branch(&'a BranchInfo),
-}
-
-/// Walks the tree into the visible row list, skipping the children of any
-/// collapsed folder. `lanes` accumulates which indent columns still have a
-/// vertical guide line at this depth.
-fn flatten<'a>(
-    nodes: &'a [Node],
-    branches: &'a [BranchInfo],
-    collapsed: &HashSet<String>,
-    depth: usize,
-    lanes: u64,
-    out: &mut Vec<Row<'a>>,
-) {
-    let last = nodes.len().saturating_sub(1);
-    for (i, n) in nodes.iter().enumerate() {
-        let is_last = i == last;
-        match n {
-            Node::Leaf(j) => out.push(Row {
-                depth,
-                lanes,
-                is_last,
-                kind: RowKind::Branch(&branches[*j]),
-            }),
-            Node::Folder {
-                name,
-                path,
-                children,
-            } => {
-                let is_collapsed = collapsed.contains(path.as_str());
-                out.push(Row {
-                    depth,
-                    lanes,
-                    is_last,
-                    kind: RowKind::Folder {
-                        name,
-                        path,
-                        collapsed: is_collapsed,
-                    },
-                });
-                if !is_collapsed {
-                    // A non-last folder leaves a pass-through lane in its own
-                    // elbow column for everything below it.
-                    let child_lanes = if depth >= 1 && !is_last {
-                        lanes | 1 << (depth - 1)
-                    } else {
-                        lanes
-                    };
-                    flatten(children, branches, collapsed, depth + 1, child_lanes, out);
-                }
-            }
-        }
-    }
-}
-
-/// Draws the tree guide lines for one row: vertical pass-throughs for ancestor
-/// lanes, plus the row's own elbow (`├` when more siblings follow, `└` when
-/// last). Columns align under the parent chevron one level up.
-fn connectors(p: &Painter, rect: Rect, depth: usize, lanes: u64, is_last: bool) {
-    if depth == 0 {
-        return;
-    }
-    let stroke = Stroke::new(1.0_f32, theme::alpha(DIM, 150));
-    let col_x = |c: usize| rect.left() + 8.0 + c as f32 * INDENT;
-    let mid = rect.center().y;
-    // Ancestor pass-throughs occupy columns below the elbow.
-    for c in 0..depth - 1 {
-        if lanes & (1 << c) != 0 {
-            p.line_segment(
-                [pos2(col_x(c), rect.top()), pos2(col_x(c), rect.bottom())],
-                stroke,
-            );
-        }
-    }
-    // Elbow: vertical down to the row centre (or full height if siblings
-    // follow), then a horizontal stub reaching toward this row's marker.
-    let ex = col_x(depth - 1);
-    let v_bottom = if is_last { mid } else { rect.bottom() };
-    p.line_segment([pos2(ex, rect.top()), pos2(ex, v_bottom)], stroke);
-    p.line_segment([pos2(ex, mid), pos2(col_x(depth) - 5.0, mid)], stroke);
-}
-
-/// A folder's collapse marker: a small filled triangle, right-pointing when
-/// collapsed and down-pointing when open. Painted rather than glyph'd -- the
-/// remote node marker is painted for the same reason (Rajdhani lacks the glyph).
-fn chevron(p: &Painter, c: Pos2, collapsed: bool) {
-    let s = 3.5;
-    let pts = if collapsed {
-        vec![
-            pos2(c.x - s * 0.6, c.y - s),
-            pos2(c.x - s * 0.6, c.y + s),
-            pos2(c.x + s * 0.8, c.y),
-        ]
-    } else {
-        vec![
-            pos2(c.x - s, c.y - s * 0.6),
-            pos2(c.x + s, c.y - s * 0.6),
-            pos2(c.x, c.y + s * 0.8),
-        ]
-    };
-    p.add(Shape::convex_polygon(pts, DIM, Stroke::NONE));
-}
-
 /// Draws the branch tree and returns the action the user asked for, if any: a
 /// double-click on a non-HEAD branch arms a checkout, the right-click menu arms a
 /// new branch from that row, and a click on a folder toggles it. The caller
@@ -608,16 +419,8 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
     let font = TextStyle::Body.resolve(ui.style());
     let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
 
-    let tree = build_tree(&tab.branches);
-    let mut rows = Vec::new();
-    flatten(
-        &tree,
-        &tab.branches,
-        &tab.collapsed_folders,
-        0,
-        0,
-        &mut rows,
-    );
+    let nodes = tree::build(tab.branches.iter().map(|b| b.name.as_str()), "");
+    let rows = tree::rows(&nodes, &tab.collapsed_folders);
 
     let mut action = None;
     for row in &rows {
@@ -628,39 +431,29 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
         }
         let p = ui.painter().with_clip_rect(rect);
         let y = rect.center().y;
-        let depth = row.depth;
-        let indent = depth as f32 * INDENT;
-        connectors(&p, rect, depth, row.lanes, row.is_last);
+        let indent = row.depth as f32 * tree::INDENT;
+        tree::connectors(&p, rect, row.depth, row.lanes, row.is_last);
         match row.kind {
-            RowKind::Folder {
+            tree::RowKind::Folder {
                 name,
                 path,
                 collapsed,
             } => {
-                if resp.hovered() {
-                    p.rect_filled(rect, CornerRadius::ZERO, BG3);
-                }
-                let cx = rect.left() + 8.0 + indent;
-                chevron(&p, pos2(cx, y), collapsed);
-                // Descender from the chevron down to the first child's elbow.
-                if !collapsed {
-                    p.line_segment(
-                        [pos2(cx, y), pos2(cx, rect.bottom())],
-                        Stroke::new(1.0_f32, theme::alpha(DIM, 150)),
-                    );
-                }
-                p.text(
-                    pos2(rect.left() + 20.0 + indent, y),
-                    Align2::LEFT_CENTER,
+                tree::folder_row(
+                    &p,
+                    rect,
+                    resp.hovered(),
+                    indent,
                     name,
+                    collapsed,
                     font.clone(),
-                    DIM,
                 );
                 if resp.clicked() {
                     action = Some(BranchAction::ToggleFolder(path.to_string()));
                 }
             }
-            RowKind::Branch(b) => {
+            tree::RowKind::Leaf(i) => {
+                let b = &tab.branches[i];
                 if b.is_head {
                     // The checked-out branch reads as the "armed" row.
                     p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(AMBER, 16));

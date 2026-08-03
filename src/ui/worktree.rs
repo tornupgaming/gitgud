@@ -3,14 +3,14 @@
 //! (metadata + touched-file list) while a graph commit is selected.
 
 use eframe::egui::{
-    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Layout, Margin, Panel, Rect, RichText,
-    Sense, Spinner, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
+    Align, Align2, CentralPanel, CornerRadius, FontId, Frame, Id, Layout, Margin, Panel, Rect,
+    Response, RichText, Sense, Spinner, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
 use super::diff::DiffView;
-use super::{HudButton, module, rel_time, sub_label, truncate_left, vscroll};
+use super::{HudButton, module, rel_time, sub_label, tree, truncate_left, vscroll};
 use crate::app::RepoTab;
-use crate::git::{ChangeKind, DiffKey, Job};
+use crate::git::{ChangeKind, DiffKey, FileChange, FileDiff, Job};
 use crate::theme::{self, ACCENT, AMBER, BG3, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// Picks the column's mode off the current selection, then runs the discard
@@ -193,6 +193,7 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
             return;
         };
 
+        let mut flip_view = false;
         ui.horizontal(|ui| {
             let label = format!("{:02} FILES", data.files.len());
             let (rect, _) = ui.allocate_exact_size(vec2(100.0, 20.0), Sense::hover());
@@ -200,70 +201,91 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(RichText::new(format!("−{}", data.dels)).color(RED));
                 ui.label(RichText::new(format!("+{}", data.adds)).color(GREEN));
+                let view = if tab.tree_view { "LIST" } else { "TREE" };
+                flip_view = ui.add(HudButton::new(view).small(true)).clicked();
             });
         });
         ui.add_space(4.0);
 
-        // Record the click during the walk; `tab.commit_diff` is borrowed
-        // for the whole list, so the mutation happens after it.
+        // Record clicks during the walk; `tab.commit_diff` is borrowed for
+        // the whole list, so the mutations happen after it.
         let mut open: Option<String> = None;
+        let mut folder: Option<String> = None;
         let font = TextStyle::Body.resolve(ui.style());
         let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
         vscroll("commit_files").show(ui, |ui| {
-            for f in &data.files {
-                let (rect, resp) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
-                if !ui.is_rect_visible(rect) {
-                    continue;
+            if tab.tree_view {
+                let nodes = tree::build(data.files.iter().map(|f| f.path.as_str()), "commit");
+                for row in tree::rows(&nodes, &tab.collapsed_file_folders) {
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+                    if !ui.is_rect_visible(rect) {
+                        continue;
+                    }
+                    match row.kind {
+                        tree::RowKind::Folder {
+                            name,
+                            path,
+                            collapsed,
+                        } => {
+                            let p = ui.painter().with_clip_rect(rect);
+                            tree::connectors(&p, rect, row.depth, row.lanes, row.is_last);
+                            tree::folder_row(
+                                &p,
+                                rect,
+                                resp.hovered(),
+                                row.depth as f32 * tree::INDENT,
+                                name,
+                                collapsed,
+                                font.clone(),
+                            );
+                            if resp.clicked() {
+                                folder = Some(path.to_string());
+                            }
+                        }
+                        tree::RowKind::Leaf(i) => {
+                            let f = &data.files[i];
+                            let leaf = f.path.rsplit('/').next().unwrap_or(&f.path);
+                            let selected = tab.commit_file.as_deref() == Some(f.path.as_str());
+                            if commit_file_row(
+                                ui,
+                                rect,
+                                &resp,
+                                f,
+                                leaf,
+                                selected,
+                                Some(&row),
+                                &font,
+                            ) {
+                                open = Some(f.path.clone());
+                            }
+                        }
+                    }
                 }
-                let selected = tab.commit_file.as_deref() == Some(f.path.as_str());
-                let p = ui.painter().with_clip_rect(rect);
-                if selected {
-                    p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(ACCENT, 24));
-                } else if resp.hovered() {
-                    p.rect_filled(rect, CornerRadius::ZERO, BG3);
-                }
-                let y = rect.center().y;
-                let r = p.text(
-                    pos2(rect.right() - 4.0, y),
-                    Align2::RIGHT_CENTER,
-                    format!("−{}", f.dels),
-                    font.clone(),
-                    RED,
-                );
-                let r = p.text(
-                    pos2(r.left() - 6.0, y),
-                    Align2::RIGHT_CENTER,
-                    format!("+{}", f.adds),
-                    font.clone(),
-                    GREEN,
-                );
-                let path = truncate_left(
-                    ui,
-                    &f.path,
-                    &font,
-                    (r.left() - 8.0 - rect.left() - 4.0).max(0.0),
-                );
-                p.text(
-                    pos2(rect.left() + 4.0, y),
-                    Align2::LEFT_CENTER,
-                    path,
-                    font.clone(),
-                    TEXT,
-                );
-                if selected {
-                    theme::glow_outline(
-                        &p,
-                        theme::chamfer(rect.shrink(1.0), 6.0),
-                        theme::alpha(ACCENT, 200),
-                    );
-                }
-                if resp.clicked() {
-                    open = Some(f.path.clone());
+            } else {
+                for f in &data.files {
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+                    if !ui.is_rect_visible(rect) {
+                        continue;
+                    }
+                    let selected = tab.commit_file.as_deref() == Some(f.path.as_str());
+                    if commit_file_row(ui, rect, &resp, f, &f.path, selected, None, &font) {
+                        open = Some(f.path.clone());
+                    }
                 }
             }
         });
 
+        if flip_view {
+            tab.tree_view = !tab.tree_view;
+        }
+        if let Some(path) = folder {
+            // Absent = expanded, so toggling is remove-or-insert.
+            if !tab.collapsed_file_folders.remove(&path) {
+                tab.collapsed_file_folders.insert(path);
+            }
+        }
         if let Some(path) = open {
             // Built synchronously from the already-loaded commit diff -- no job.
             tab.diff = DiffView::build_one(tab.commit_diff.as_ref().unwrap(), &path);
@@ -324,17 +346,35 @@ fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     }
 }
 
+/// What the user asked of a file row or its tree: open it in the diff view,
+/// stage/unstage it, arm a discard, or collapse/expand a folder. Recorded
+/// during the row walk (which borrows the file list) and applied after it by
+/// `apply_file_action`.
+enum FileAction {
+    Select(DiffKey),
+    Toggle(String),
+    Discard(String),
+    ToggleFolder(String),
+}
+
 fn changes(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     vscroll("changes").show(ui, |ui| {
         let staged_label = format!("STAGED · {:02}", tab.staged.len());
         let any_staged = !tab.staged.is_empty();
-        if list_header(ui, &staged_label, &[("UNSTAGE ALL", any_staged)]) == Some(0) {
-            jobs.push(Job::Unstage {
+        // The view toggle rides on the STAGED header but flips both lists (and
+        // the commit-detail view).
+        let view = if tab.tree_view { "LIST" } else { "TREE" };
+        let actions = [("UNSTAGE ALL", any_staged), (view, true)];
+        match list_header(ui, &staged_label, &actions) {
+            Some(0) => jobs.push(Job::Unstage {
                 id: tab.id,
                 path: None,
-            });
+            }),
+            Some(1) => tab.tree_view = !tab.tree_view,
+            _ => {}
         }
-        file_rows(ui, tab, true, jobs);
+        let action = file_rows(ui, tab, true);
+        apply_file_action(tab, true, action, jobs);
         ui.add_space(10.0);
         let unstaged_label = format!("UNSTAGED · {:02}", tab.unstaged.len());
         let any_unstaged = !tab.unstaged.is_empty();
@@ -348,8 +388,54 @@ fn changes(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             Some(1) => tab.pending_discard = Some(None),
             _ => {}
         }
-        file_rows(ui, tab, false, jobs);
+        let action = file_rows(ui, tab, false);
+        apply_file_action(tab, false, action, jobs);
     });
+}
+
+/// Applies a recorded file-row click. `staged` picks a Toggle's direction.
+fn apply_file_action(
+    tab: &mut RepoTab,
+    staged: bool,
+    action: Option<FileAction>,
+    jobs: &mut Vec<Job>,
+) {
+    match action {
+        Some(FileAction::Discard(path)) => {
+            // Arms the confirm modal; the job fires there.
+            tab.pending_discard = Some(Some(path));
+        }
+        Some(FileAction::Toggle(path)) => jobs.push(if staged {
+            Job::Unstage {
+                id: tab.id,
+                path: Some(path),
+            }
+        } else {
+            Job::Stage {
+                id: tab.id,
+                path: Some(path),
+            }
+        }),
+        Some(FileAction::Select(key)) => {
+            tab.selection = Some(key.clone());
+            tab.diff = None;
+            if let DiffKey::Conflict { path } = key {
+                tab.conflict = None;
+                jobs.push(Job::LoadConflict { id: tab.id, path });
+            } else {
+                jobs.push(Job::LoadDiff { id: tab.id, key });
+            }
+        }
+        Some(FileAction::ToggleFolder(path)) => {
+            // Absent = expanded, so toggling is remove-or-insert.
+            if tab.collapsed_file_folders.contains(&path) {
+                tab.collapsed_file_folders.remove(&path);
+            } else {
+                tab.collapsed_file_folders.insert(path);
+            }
+        }
+        None => {}
+    }
 }
 
 /// Section header with right-aligned action buttons (first = rightmost).
@@ -375,178 +461,276 @@ fn list_header(ui: &mut Ui, label: &str, actions: &[(&str, bool)]) -> Option<usi
     clicked
 }
 
-fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) {
+/// Walks one section's file list -- flat or as a path tree per `tab.tree_view`
+/// -- and returns the action the user asked for, if any.
+fn file_rows(ui: &mut Ui, tab: &RepoTab, staged: bool) -> Option<FileAction> {
     let font = TextStyle::Body.resolve(ui.style());
     let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
-    let btn_w = 16.0;
-
-    // Record clicks during the walk and mutate `tab` after the loop -- we
-    // can't set `tab.selection` while still borrowing `tab.staged`.
-    let mut select: Option<DiffKey> = None;
-    let mut toggle: Option<String> = None;
-    let mut discard: Option<String> = None;
-
     let files = if staged { &tab.staged } else { &tab.unstaged };
-    for f in files {
-        let (rect, resp) =
-            ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
-        if !ui.is_rect_visible(rect) {
-            continue;
+    let mut action = None;
+
+    if !tab.tree_view {
+        for f in files {
+            if let Some(a) = file_row(ui, tab, f, staged, None, &f.path, &font, row_h) {
+                action = Some(a);
+            }
         }
-        let conflicted = f.kind == ChangeKind::Conflicted;
-        let key = if conflicted {
-            DiffKey::Conflict {
-                path: f.path.clone(),
+        return action;
+    }
+
+    let prefix = if staged { "staged" } else { "unstaged" };
+    let nodes = tree::build(files.iter().map(|f| f.path.as_str()), prefix);
+    for row in tree::rows(&nodes, &tab.collapsed_file_folders) {
+        match row.kind {
+            tree::RowKind::Folder {
+                name,
+                path,
+                collapsed,
+            } => {
+                let (rect, resp) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+                if !ui.is_rect_visible(rect) {
+                    continue;
+                }
+                let p = ui.painter().with_clip_rect(rect);
+                tree::connectors(&p, rect, row.depth, row.lanes, row.is_last);
+                tree::folder_row(
+                    &p,
+                    rect,
+                    resp.hovered(),
+                    row.depth as f32 * tree::INDENT,
+                    name,
+                    collapsed,
+                    font.clone(),
+                );
+                if resp.clicked() {
+                    action = Some(FileAction::ToggleFolder(path.to_string()));
+                }
             }
-        } else {
-            DiffKey::Workdir {
-                path: f.path.clone(),
-                staged,
+            tree::RowKind::Leaf(i) => {
+                let f = &files[i];
+                let leaf = f.path.rsplit('/').next().unwrap_or(&f.path);
+                if let Some(a) = file_row(ui, tab, f, staged, Some(&row), leaf, &font, row_h) {
+                    action = Some(a);
+                }
             }
-        };
-        let selected = tab.selection.as_ref() == Some(&key);
-        let p = ui.painter().with_clip_rect(rect);
-        if selected {
-            p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(ACCENT, 26));
+        }
+    }
+    action
+}
+
+/// One working-tree file row: kind glyph, name, and the stage/unstage/discard
+/// buttons. `row` carries the tree position in tree mode (`None` = flat list);
+/// `label` is what's drawn -- the full path flat, the final segment in a tree.
+/// The returned action always carries the full path.
+#[allow(clippy::too_many_arguments)]
+fn file_row(
+    ui: &mut Ui,
+    tab: &RepoTab,
+    f: &FileChange,
+    staged: bool,
+    row: Option<&tree::Row>,
+    label: &str,
+    font: &FontId,
+    row_h: f32,
+) -> Option<FileAction> {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return None;
+    }
+    let btn_w = 16.0;
+    let indent = row.map_or(0.0, |r| r.depth as f32 * tree::INDENT);
+    let conflicted = f.kind == ChangeKind::Conflicted;
+    let key = if conflicted {
+        DiffKey::Conflict {
+            path: f.path.clone(),
+        }
+    } else {
+        DiffKey::Workdir {
+            path: f.path.clone(),
+            staged,
+        }
+    };
+    let selected = tab.selection.as_ref() == Some(&key);
+    let p = ui.painter().with_clip_rect(rect);
+    if selected {
+        p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(ACCENT, 26));
+        p.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(1.0_f32, theme::alpha(ACCENT, 150)),
+            StrokeKind::Inside,
+        );
+    } else if resp.hovered() {
+        p.rect_filled(rect, CornerRadius::ZERO, BG3);
+    }
+    if let Some(r) = row {
+        tree::connectors(&p, rect, r.depth, r.lanes, r.is_last);
+    }
+
+    let y = rect.center().y;
+    let glyph_color = match f.kind {
+        ChangeKind::Added | ChangeKind::Untracked => GREEN,
+        ChangeKind::Deleted | ChangeKind::Conflicted => RED,
+        ChangeKind::Modified => AMBER,
+        ChangeKind::Submodule => PURPLE,
+        _ => DIM,
+    };
+    p.text(
+        pos2(rect.left() + 4.0 + indent, y),
+        Align2::LEFT_CENTER,
+        f.kind.glyph(),
+        font.clone(),
+        glyph_color,
+    );
+
+    // Unstaged rows carry two buttons (discard + stage), staged rows one.
+    // Conflicted rows carry none: staging raw marker text or discarding
+    // mid-merge is a footgun; resolution happens in the center view.
+    // Submodule rows carry only stage/unstage: discarding a gitlink without
+    // moving the submodule checkout would just re-stage on the next refresh.
+    let submodule = f.kind == ChangeKind::Submodule;
+    let btn_count = if conflicted {
+        0.0
+    } else if staged || submodule {
+        1.0
+    } else {
+        2.0
+    };
+    let text_w = rect.width() - 20.0 - indent - (btn_w + 4.0) * btn_count - 8.0;
+    let label = truncate_left(ui, label, font, text_w.max(0.0));
+    p.text(
+        pos2(rect.left() + 20.0 + indent, y),
+        Align2::LEFT_CENTER,
+        label,
+        font.clone(),
+        if conflicted { RED } else { TEXT },
+    );
+
+    let mut toggle_clicked = false;
+    let mut discard_clicked = false;
+    if !conflicted {
+        let btn_rect = Rect::from_center_size(
+            pos2(rect.right() - 4.0 - btn_w / 2.0, y),
+            vec2(btn_w, btn_w),
+        );
+        let btn = ui.interact(btn_rect, resp.id.with("toggle"), Sense::click());
+        if btn.hovered() {
+            p.rect_filled(btn_rect, CornerRadius::ZERO, BG3);
             p.rect_stroke(
-                rect,
+                btn_rect,
                 CornerRadius::ZERO,
-                Stroke::new(1.0_f32, theme::alpha(ACCENT, 150)),
+                Stroke::new(1.0_f32, ACCENT),
                 StrokeKind::Inside,
             );
-        } else if resp.hovered() {
-            p.rect_filled(rect, CornerRadius::ZERO, BG3);
         }
-
-        let y = rect.center().y;
-        let glyph_color = match f.kind {
-            ChangeKind::Added | ChangeKind::Untracked => GREEN,
-            ChangeKind::Deleted | ChangeKind::Conflicted => RED,
-            ChangeKind::Modified => AMBER,
-            ChangeKind::Submodule => PURPLE,
-            _ => DIM,
-        };
+        let (label, label_color) = if staged { ("−", RED) } else { ("+", GREEN) };
         p.text(
-            pos2(rect.left() + 4.0, y),
-            Align2::LEFT_CENTER,
-            f.kind.glyph(),
+            btn_rect.center(),
+            Align2::CENTER_CENTER,
+            label,
             font.clone(),
-            glyph_color,
+            label_color,
         );
+        toggle_clicked = btn.clicked();
 
-        // Unstaged rows carry two buttons (discard + stage), staged rows one.
-        // Conflicted rows carry none: staging raw marker text or discarding
-        // mid-merge is a footgun; resolution happens in the center view.
-        // Submodule rows carry only stage/unstage: discarding a gitlink without
-        // moving the submodule checkout would just re-stage on the next refresh.
-        let submodule = f.kind == ChangeKind::Submodule;
-        let btn_count = if conflicted {
-            0.0
-        } else if staged || submodule {
-            1.0
-        } else {
-            2.0
-        };
-        let text_w = rect.width() - 20.0 - (btn_w + 4.0) * btn_count - 8.0;
-        let path = truncate_left(ui, &f.path, &font, text_w);
-        p.text(
-            pos2(rect.left() + 20.0, y),
-            Align2::LEFT_CENTER,
-            path,
-            font.clone(),
-            if conflicted { RED } else { TEXT },
-        );
-
-        let mut toggle_clicked = false;
-        let mut discard_clicked = false;
-        if !conflicted {
-            let btn_rect = Rect::from_center_size(
-                pos2(rect.right() - 4.0 - btn_w / 2.0, y),
+        if !staged && !submodule {
+            let x_rect = Rect::from_center_size(
+                pos2(btn_rect.left() - 4.0 - btn_w / 2.0, y),
                 vec2(btn_w, btn_w),
             );
-            let btn = ui.interact(btn_rect, resp.id.with("toggle"), Sense::click());
-            if btn.hovered() {
-                p.rect_filled(btn_rect, CornerRadius::ZERO, BG3);
+            let x_btn = ui.interact(x_rect, resp.id.with("discard"), Sense::click());
+            if x_btn.hovered() {
+                p.rect_filled(x_rect, CornerRadius::ZERO, BG3);
                 p.rect_stroke(
-                    btn_rect,
+                    x_rect,
                     CornerRadius::ZERO,
-                    Stroke::new(1.0_f32, ACCENT),
+                    Stroke::new(1.0_f32, RED),
                     StrokeKind::Inside,
                 );
             }
-            let (label, label_color) = if staged { ("−", RED) } else { ("+", GREEN) };
             p.text(
-                btn_rect.center(),
+                x_rect.center(),
                 Align2::CENTER_CENTER,
-                label,
+                "×",
                 font.clone(),
-                label_color,
+                RED,
             );
-            toggle_clicked = btn.clicked();
-
-            if !staged && !submodule {
-                let x_rect = Rect::from_center_size(
-                    pos2(btn_rect.left() - 4.0 - btn_w / 2.0, y),
-                    vec2(btn_w, btn_w),
-                );
-                let x_btn = ui.interact(x_rect, resp.id.with("discard"), Sense::click());
-                if x_btn.hovered() {
-                    p.rect_filled(x_rect, CornerRadius::ZERO, BG3);
-                    p.rect_stroke(
-                        x_rect,
-                        CornerRadius::ZERO,
-                        Stroke::new(1.0_f32, RED),
-                        StrokeKind::Inside,
-                    );
-                }
-                p.text(
-                    x_rect.center(),
-                    Align2::CENTER_CENTER,
-                    "×",
-                    font.clone(),
-                    RED,
-                );
-                discard_clicked = x_btn.clicked();
-            }
-        }
-
-        if discard_clicked {
-            discard = Some(f.path.clone());
-        } else if toggle_clicked {
-            toggle = Some(f.path.clone());
-        } else if resp.clicked() {
-            select = Some(key);
+            discard_clicked = x_btn.clicked();
         }
     }
 
-    if let Some(path) = discard {
-        // Arms the confirm modal; the job fires there.
-        tab.pending_discard = Some(Some(path));
+    if discard_clicked {
+        Some(FileAction::Discard(f.path.clone()))
+    } else if toggle_clicked {
+        Some(FileAction::Toggle(f.path.clone()))
+    } else if resp.clicked() {
+        Some(FileAction::Select(key))
+    } else {
+        None
     }
+}
 
-    if let Some(path) = toggle {
-        jobs.push(if staged {
-            Job::Unstage {
-                id: tab.id,
-                path: Some(path),
-            }
-        } else {
-            Job::Stage {
-                id: tab.id,
-                path: Some(path),
-            }
-        });
+/// One commit-detail file row: +/− counts right-aligned, then the name. `row`
+/// carries the tree position in tree mode (`None` = flat list); `label` is the
+/// full path flat, the final segment in a tree. Returns true when clicked.
+#[allow(clippy::too_many_arguments)]
+fn commit_file_row(
+    ui: &Ui,
+    rect: Rect,
+    resp: &Response,
+    f: &FileDiff,
+    label: &str,
+    selected: bool,
+    row: Option<&tree::Row>,
+    font: &FontId,
+) -> bool {
+    let p = ui.painter().with_clip_rect(rect);
+    if selected {
+        p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(ACCENT, 24));
+    } else if resp.hovered() {
+        p.rect_filled(rect, CornerRadius::ZERO, BG3);
     }
-    if let Some(key) = select {
-        tab.selection = Some(key.clone());
-        tab.diff = None;
-        if let DiffKey::Conflict { path } = key {
-            tab.conflict = None;
-            jobs.push(Job::LoadConflict { id: tab.id, path });
-        } else {
-            jobs.push(Job::LoadDiff { id: tab.id, key });
-        }
+    if let Some(r) = row {
+        tree::connectors(&p, rect, r.depth, r.lanes, r.is_last);
     }
+    let text_x = row.map_or(4.0, |r| 20.0 + r.depth as f32 * tree::INDENT);
+    let y = rect.center().y;
+    let r = p.text(
+        pos2(rect.right() - 4.0, y),
+        Align2::RIGHT_CENTER,
+        format!("−{}", f.dels),
+        font.clone(),
+        RED,
+    );
+    let r = p.text(
+        pos2(r.left() - 6.0, y),
+        Align2::RIGHT_CENTER,
+        format!("+{}", f.adds),
+        font.clone(),
+        GREEN,
+    );
+    let label = truncate_left(
+        ui,
+        label,
+        font,
+        (r.left() - 8.0 - rect.left() - text_x).max(0.0),
+    );
+    p.text(
+        pos2(rect.left() + text_x, y),
+        Align2::LEFT_CENTER,
+        label,
+        font.clone(),
+        TEXT,
+    );
+    if selected {
+        theme::glow_outline(
+            &p,
+            theme::chamfer(rect.shrink(1.0), 6.0),
+            theme::alpha(ACCENT, 200),
+        );
+    }
+    resp.clicked()
 }
 
 fn commit_box(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {

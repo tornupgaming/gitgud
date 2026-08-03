@@ -66,6 +66,13 @@ pub struct RepoTab {
     /// behaviour needs no seeding and survives refreshes (which replace
     /// `branches` but not this).
     pub collapsed_folders: HashSet<String>,
+    /// The working-tree and commit-detail file lists render as a path tree
+    /// when set; the TREE/LIST header toggle flips it.
+    pub tree_view: bool,
+    /// Collapsed folders in the file trees, keyed by section-prefixed folder
+    /// path (`staged/src`, `unstaged/src/ui`, `commit/assets`). Same absent =
+    /// expanded convention as `collapsed_folders`.
+    pub collapsed_file_folders: HashSet<String>,
     /// Submodules for the SUBMODULES panel; empty hides it.
     pub submodules: Vec<SubmoduleInfo>,
     pub staged: Vec<FileChange>,
@@ -154,6 +161,8 @@ impl RepoTab {
             head_detached: false,
             branches: Vec::new(),
             collapsed_folders: HashSet::new(),
+            tree_view: true,
+            collapsed_file_folders: HashSet::new(),
             submodules: Vec::new(),
             staged: Vec::new(),
             unstaged: Vec::new(),

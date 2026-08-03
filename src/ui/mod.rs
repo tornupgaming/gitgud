@@ -10,6 +10,7 @@ pub mod shell;
 pub mod sidebar;
 pub mod submodules;
 pub mod sync;
+mod tree;
 pub mod widgets;
 pub mod worktree;
 
