@@ -1,6 +1,6 @@
 # GITGUD
 
-A git GUI for Windows with a sci-fi HUD aesthetic. Single ~4 MB executable, no install, no telemetry.
+A git GUI for Windows and Linux with a sci-fi HUD aesthetic. Single ~4 MB executable, no install, no telemetry.
 
 ![gitgud showing a syntax-highlighted diff, commit graph, and commit detail](assets/screenshot.png)
 
