@@ -401,7 +401,16 @@ impl GitGudApp {
     }
 
     fn repos_file() -> Option<PathBuf> {
-        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("gitgud").join("repos.txt"))
+        let base = if cfg!(windows) {
+            std::env::var_os("APPDATA").map(PathBuf::from)
+        } else {
+            // XDG spec: relative $XDG_CONFIG_HOME must be ignored
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        };
+        base.map(|d| d.join("gitgud").join("repos.txt"))
     }
 
     fn load_repo_list() -> Vec<PathBuf> {
