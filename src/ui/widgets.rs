@@ -163,7 +163,10 @@ impl Widget for HudButton {
         } else {
             BORDER.lerp_to_gamma(ACCENT, t)
         };
-        painter.add(Shape::closed_line(outline, Stroke::new(1.0, border_color)));
+        painter.add(Shape::closed_line(
+            outline,
+            Stroke::new(1.0_f32, border_color),
+        ));
 
         // Target-lock brackets: four L-shaped corner ticks that start outside
         // the plate and converge onto it as the hover factor rises, arms
@@ -175,7 +178,7 @@ impl Widget for HudButton {
                 painter,
                 rect.expand(reach),
                 arm,
-                Stroke::new(1.5, theme::alpha(ACCENT, (230.0 * t) as u8)),
+                Stroke::new(1.5_f32, theme::alpha(ACCENT, (230.0 * t) as u8)),
             );
         }
 
@@ -188,7 +191,7 @@ impl Widget for HudButton {
             // Same 45° slant as the hatch; travels left edge to right edge.
             let x = lerp((l - h)..=rect.right(), t);
             let p = painter.with_clip_rect(rect);
-            for (w, a) in [(10.0, 28.0), (3.0, 90.0)] {
+            for (w, a) in [(10.0_f32, 28.0), (3.0_f32, 90.0)] {
                 p.line_segment(
                     [pos2(x, b), pos2(x + h, top)],
                     Stroke::new(w, theme::alpha(BRIGHT, (a * flash) as u8)),
@@ -207,7 +210,7 @@ impl Widget for HudButton {
             } else {
                 BORDER.lerp_to_gamma(ACCENT, t)
             };
-            let hatch = Stroke::new(1.0, theme::alpha(hatch_color, 26));
+            let hatch = Stroke::new(1.0_f32, theme::alpha(hatch_color, 26));
             let h = band.height();
             let mut x = band.left() - h;
             while x < band.right() {

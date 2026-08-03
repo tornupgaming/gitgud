@@ -64,7 +64,7 @@ fn merge_banner(ui: &mut Ui, tab: &mut RepoTab) {
     p.rect_stroke(
         rect,
         CornerRadius::ZERO,
-        Stroke::new(1.0, theme::alpha(AMBER, 140)),
+        Stroke::new(1.0_f32, theme::alpha(AMBER, 140)),
         StrokeKind::Inside,
     );
     theme::tracked_text(
@@ -411,7 +411,7 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
             p.rect_stroke(
                 rect,
                 CornerRadius::ZERO,
-                Stroke::new(1.0, theme::alpha(ACCENT, 150)),
+                Stroke::new(1.0_f32, theme::alpha(ACCENT, 150)),
                 StrokeKind::Inside,
             );
         } else if resp.hovered() {
@@ -470,7 +470,7 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
                 p.rect_stroke(
                     btn_rect,
                     CornerRadius::ZERO,
-                    Stroke::new(1.0, ACCENT),
+                    Stroke::new(1.0_f32, ACCENT),
                     StrokeKind::Inside,
                 );
             }
@@ -495,7 +495,7 @@ fn file_rows(ui: &mut Ui, tab: &mut RepoTab, staged: bool, jobs: &mut Vec<Job>) 
                     p.rect_stroke(
                         x_rect,
                         CornerRadius::ZERO,
-                        Stroke::new(1.0, RED),
+                        Stroke::new(1.0_f32, RED),
                         StrokeKind::Inside,
                     );
                 }

@@ -89,7 +89,7 @@ fn rows(ui: &mut Ui, tab: &RepoTab) -> Option<SubAction> {
         if s.initialized {
             p.circle_filled(pos2(rect.left() + 9.0, y), 3.0, color);
         } else {
-            p.circle_stroke(pos2(rect.left() + 9.0, y), 3.0, Stroke::new(1.0, color));
+            p.circle_stroke(pos2(rect.left() + 9.0, y), 3.0, Stroke::new(1.0_f32, color));
         }
 
         // Right readout: the checked-out short id, or "uninit" prompting an

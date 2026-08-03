@@ -310,7 +310,7 @@ fn title_strip(ui: &mut Ui, path: &str) {
     p.rect_stroke(
         chip,
         CornerRadius::ZERO,
-        Stroke::new(1.0, RED),
+        Stroke::new(1.0_f32, RED),
         StrokeKind::Inside,
     );
     p.text(chip.center(), Align2::CENTER_CENTER, "CONFLICT", small, RED);
@@ -352,7 +352,7 @@ fn body(ui: &mut Ui, rows: &[Row], choices: &mut [Choice], ours_label: &str, the
                     let gx = rect.left() + 1.0;
                     p.line_segment(
                         [pos2(gx, rect.top()), pos2(gx, rect.bottom())],
-                        Stroke::new(1.0, theme::alpha(BORDER, 160)),
+                        Stroke::new(1.0_f32, theme::alpha(BORDER, 160)),
                     );
                     paint_code(ui, &p, rect, &font, text, spans, TEXT);
                 }
@@ -396,7 +396,7 @@ fn body(ui: &mut Ui, rows: &[Row], choices: &mut [Choice], ours_label: &str, the
                     if *last {
                         p.line_segment(
                             [rect.left_bottom(), rect.right_bottom()],
-                            Stroke::new(1.0, BORDER),
+                            Stroke::new(1.0_f32, BORDER),
                         );
                     }
                 }
@@ -423,7 +423,7 @@ fn block_header(
     // reads as one framed unit.
     p.line_segment(
         [rect.left_top(), rect.right_top()],
-        Stroke::new(1.0, BORDER),
+        Stroke::new(1.0_f32, BORDER),
     );
 
     let defs = [
@@ -491,7 +491,7 @@ fn block_header(
         p.rect_stroke(
             chip,
             CornerRadius::ZERO,
-            Stroke::new(1.0, border),
+            Stroke::new(1.0_f32, border),
             StrokeKind::Inside,
         );
         let text_color = if active {

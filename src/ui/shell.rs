@@ -72,15 +72,15 @@ pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAct
     let p = ui.painter();
     p.line_segment(
         [pos2(bar.left(), y), pos2(bar.right(), y)],
-        Stroke::new(1.0, theme::alpha(ACCENT, 90)),
+        Stroke::new(1.0_f32, theme::alpha(ACCENT, 90)),
     );
     p.line_segment(
         [pos2(bar.left(), y), pos2(bar.left() + 14.0, y)],
-        Stroke::new(2.0, ACCENT),
+        Stroke::new(2.0_f32, ACCENT),
     );
     p.line_segment(
         [pos2(bar.right() - 14.0, y), pos2(bar.right(), y)],
-        Stroke::new(2.0, ACCENT),
+        Stroke::new(2.0_f32, ACCENT),
     );
     action
 }
@@ -149,7 +149,7 @@ fn tab_plate(ui: &mut Ui, tab: &RepoTab, is_active: bool) -> Option<TabClick> {
         theme::glow_outline(p, outline, ACCENT);
     } else {
         let color = if resp.hovered() { ACCENT } else { BORDER };
-        p.add(Shape::closed_line(outline, Stroke::new(1.0, color)));
+        p.add(Shape::closed_line(outline, Stroke::new(1.0_f32, color)));
     }
 
     // Status diamond: amber while jobs are in flight, green when settled.
@@ -209,7 +209,7 @@ pub fn status_bar(ui: &mut Ui, tab: Option<&RepoTab>, app_log: Option<&(bool, St
             pos2(ui.clip_rect().left(), top),
             pos2(ui.clip_rect().right(), top),
         ],
-        Stroke::new(1.0, theme::alpha(ACCENT, 70)),
+        Stroke::new(1.0_f32, theme::alpha(ACCENT, 70)),
     );
 
     let log = tab.and_then(|t| t.log.as_ref()).or(app_log);
@@ -250,7 +250,7 @@ pub fn status_bar(ui: &mut Ui, tab: Option<&RepoTab>, app_log: Option<&(bool, St
                     .add(Shape::convex_polygon(pts, AMBER, Stroke::NONE));
             } else {
                 ui.painter()
-                    .add(Shape::closed_line(pts, Stroke::new(1.0, AMBER)));
+                    .add(Shape::closed_line(pts, Stroke::new(1.0_f32, AMBER)));
             }
             ui.label(RichText::new(&tab.head).color(AMBER));
             ui.label(
@@ -288,7 +288,7 @@ pub fn status_bar(ui: &mut Ui, tab: Option<&RepoTab>, app_log: Option<&(bool, St
         let x = bar.left() + span * (0.5 + 0.5 * (time * 2.4).sin()) as f32;
         let y = bar.top();
         ui.painter()
-            .line_segment([pos2(x, y), pos2(x + seg, y)], Stroke::new(1.5, ACCENT));
+            .line_segment([pos2(x, y), pos2(x + seg, y)], Stroke::new(1.5_f32, ACCENT));
         ui.ctx().request_repaint();
     }
 }
@@ -301,7 +301,7 @@ pub fn empty_state(ui: &mut Ui) -> bool {
         ui.painter(),
         area.shrink(18.0),
         22.0,
-        Stroke::new(1.5, ACCENT),
+        Stroke::new(1.5_f32, ACCENT),
     );
 
     ui.add_space((ui.available_height() * 0.5 - 270.0).max(0.0));
@@ -359,10 +359,10 @@ fn radar(ui: &mut Ui) {
     let time = ui.input(|i| i.time);
 
     for (radius, a) in [(R, 16), (R * 0.68, 28), (R * 0.36, 44)] {
-        p.circle_stroke(c, radius, Stroke::new(1.0, theme::alpha(ACCENT, a)));
+        p.circle_stroke(c, radius, Stroke::new(1.0_f32, theme::alpha(ACCENT, a)));
     }
     // Crosshair axes.
-    let axis = Stroke::new(1.0, theme::alpha(ACCENT, 22));
+    let axis = Stroke::new(1.0_f32, theme::alpha(ACCENT, 22));
     p.line_segment([pos2(c.x - R, c.y), pos2(c.x + R, c.y)], axis);
     p.line_segment([pos2(c.x, c.y - R), pos2(c.x, c.y + R)], axis);
 
@@ -374,7 +374,7 @@ fn radar(ui: &mut Ui) {
         let fade = 1.0 - i as f32 / TRAIL as f32;
         let (sin, cos) = a.sin_cos();
         let tip = pos2(c.x + cos as f32 * R, c.y + sin as f32 * R);
-        let w = if i == 0 { 1.5 } else { 1.0 };
+        let w = if i == 0 { 1.5_f32 } else { 1.0_f32 };
         p.line_segment(
             [c, tip],
             Stroke::new(w, theme::alpha(ACCENT, (fade * 90.0) as u8)),
@@ -396,7 +396,7 @@ fn radar(ui: &mut Ui) {
         p.circle_stroke(
             pos,
             3.0 + pulse * 5.0,
-            Stroke::new(1.0, theme::alpha(*color, ((1.0 - pulse) * 120.0) as u8)),
+            Stroke::new(1.0_f32, theme::alpha(*color, ((1.0 - pulse) * 120.0) as u8)),
         );
     }
 

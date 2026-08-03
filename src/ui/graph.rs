@@ -133,7 +133,7 @@ fn draw_edges(p: &Painter, left: f32, y_top: f32, g: &Geom, edges: &[Edge], stub
         let color = theme::alpha(LANES[e.color as usize % LANES.len()], a);
         let x0 = lane_x(left, e.from.min(g.max_lane));
         let x1 = lane_x(left, e.to.min(g.max_lane));
-        let stroke = Stroke::new(1.5, color);
+        let stroke = Stroke::new(1.5_f32, color);
         if x0 == x1 {
             p.line_segment([pos2(x0, y_top), pos2(x0, y_bot)], stroke);
         } else {
@@ -211,7 +211,7 @@ fn commit_row(
             Stroke::NONE,
         ));
     } else {
-        p.circle_stroke(node, 3.5, Stroke::new(1.0, color));
+        p.circle_stroke(node, 3.5, Stroke::new(1.0_f32, color));
         p.circle_filled(node, 1.5, color);
     }
 
@@ -248,7 +248,7 @@ fn commit_row(
         p.rect_stroke(
             chip,
             CornerRadius::ZERO,
-            Stroke::new(1.0, color),
+            Stroke::new(1.0_f32, color),
             StrokeKind::Inside,
         );
         p.text(
@@ -320,7 +320,7 @@ fn wip_row(ui: &mut Ui, tab: &RepoTab, g: &Geom, action: &mut Option<Action>) {
     // bridges the row gap.
     ui.painter().extend(Shape::dashed_line(
         &[pos2(x, y1 + 6.0), pos2(x, y1 + g.pitch)],
-        Stroke::new(1.0, DIM),
+        Stroke::new(1.0_f32, DIM),
         3.0,
         3.0,
     ));
@@ -328,7 +328,7 @@ fn wip_row(ui: &mut Ui, tab: &RepoTab, g: &Geom, action: &mut Option<Action>) {
     p.circle_stroke(
         pos2(x, y1),
         4.0,
-        Stroke::new(1.5, theme::alpha(ACCENT, 200)),
+        Stroke::new(1.5_f32, theme::alpha(ACCENT, 200)),
     );
     p.circle_filled(pos2(x, y1), 2.0, BG0);
 
@@ -353,7 +353,7 @@ fn wip_row(ui: &mut Ui, tab: &RepoTab, g: &Geom, action: &mut Option<Action>) {
     p.rect_stroke(
         chip,
         CornerRadius::ZERO,
-        Stroke::new(1.0, ACCENT),
+        Stroke::new(1.0_f32, ACCENT),
         StrokeKind::Inside,
     );
     p.text(

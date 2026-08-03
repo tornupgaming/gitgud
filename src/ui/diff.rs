@@ -161,7 +161,7 @@ fn header(ui: &mut Ui, tab: &RepoTab, key: &DiffKey, view: &DiffView) {
     p.rect_stroke(
         chip,
         CornerRadius::ZERO,
-        Stroke::new(1.0, tag_color),
+        Stroke::new(1.0_f32, tag_color),
         StrokeKind::Inside,
     );
     p.text(chip.center(), Align2::CENTER_CENTER, tag, small, tag_color);
@@ -247,7 +247,7 @@ fn body(ui: &mut Ui, view: &DiffView) {
                     p.rect_filled(rect, CornerRadius::ZERO, BG2);
                     p.line_segment(
                         [rect.left_bottom(), rect.right_bottom()],
-                        Stroke::new(1.0, theme::alpha(ACCENT, 90)),
+                        Stroke::new(1.0_f32, theme::alpha(ACCENT, 90)),
                     );
                     let r = p.text(
                         pos2(rect.right() - 6.0, y),
@@ -318,7 +318,7 @@ fn body(ui: &mut Ui, view: &DiffView) {
                         let gx = rect.left() + gutter_w - 6.0;
                         p.line_segment(
                             [pos2(gx, rect.top()), pos2(gx, rect.bottom())],
-                            Stroke::new(1.0, theme::alpha(BORDER, 160)),
+                            Stroke::new(1.0_f32, theme::alpha(BORDER, 160)),
                         );
                     }
                     match spans {

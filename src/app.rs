@@ -1002,7 +1002,7 @@ impl eframe::App for GitGudApp {
             ui.painter(),
             ui.max_rect().shrink(2.0),
             16.0,
-            Stroke::new(1.5, ACCENT),
+            Stroke::new(1.5_f32, ACCENT),
         );
 
         for job in jobs {

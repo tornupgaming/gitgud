@@ -559,7 +559,7 @@ fn connectors(p: &Painter, rect: Rect, depth: usize, lanes: u64, is_last: bool) 
     if depth == 0 {
         return;
     }
-    let stroke = Stroke::new(1.0, theme::alpha(DIM, 150));
+    let stroke = Stroke::new(1.0_f32, theme::alpha(DIM, 150));
     let col_x = |c: usize| rect.left() + 8.0 + c as f32 * INDENT;
     let mid = rect.center().y;
     // Ancestor pass-throughs occupy columns below the elbow.
@@ -646,7 +646,7 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
                 if !collapsed {
                     p.line_segment(
                         [pos2(cx, y), pos2(cx, rect.bottom())],
-                        Stroke::new(1.0, theme::alpha(DIM, 150)),
+                        Stroke::new(1.0_f32, theme::alpha(DIM, 150)),
                     );
                 }
                 p.text(
@@ -675,7 +675,7 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
                     p.circle_stroke(
                         pos2(rect.left() + 9.0 + indent, y),
                         3.0,
-                        Stroke::new(1.0, PURPLE),
+                        Stroke::new(1.0_f32, PURPLE),
                     );
                     p.text(
                         pos2(rect.left() + 20.0 + indent, y),

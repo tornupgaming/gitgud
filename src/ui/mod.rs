@@ -105,7 +105,7 @@ pub(crate) fn module<R>(
     let y = band_bottom + 0.5;
     p.line_segment(
         [pos2(l, y), pos2(title_rect.right() + 6.0, y)],
-        Stroke::new(1.0, ACCENT),
+        Stroke::new(1.0_f32, ACCENT),
     );
     theme::fade_rule(
         p,
@@ -117,7 +117,7 @@ pub(crate) fn module<R>(
     theme::glow_outline(p, theme::chamfer(rect, c), theme::alpha(ACCENT, 110));
     // Corner ticks only on the two square corners; the chamfered ones carry
     // the cut itself as their accent.
-    let tick = Stroke::new(1.5, ACCENT);
+    let tick = Stroke::new(1.5_f32, ACCENT);
     p.line_segment([rect.left_top(), rect.left_top() + vec2(10.0, 0.0)], tick);
     p.line_segment([rect.left_top(), rect.left_top() + vec2(0.0, 10.0)], tick);
     p.line_segment(

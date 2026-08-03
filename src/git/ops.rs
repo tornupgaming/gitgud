@@ -1924,7 +1924,12 @@ mod tests {
         assert!(workdir_path(&repo, "sub/file.txt").is_ok());
         assert!(workdir_path(&repo, "../evil.txt").is_err());
         assert!(workdir_path(&repo, "a/../../evil.txt").is_err());
+        // A drive-letter prefix is only an absolute root on Windows; on Unix
+        // "C:" is an ordinary file name, so the path stays confined there.
+        #[cfg(windows)]
         assert!(workdir_path(&repo, "C:/evil.txt").is_err());
+        #[cfg(not(windows))]
+        assert!(workdir_path(&repo, "C:/evil.txt").is_ok());
         assert!(workdir_path(&repo, "/evil.txt").is_err());
 
         drop(repo);

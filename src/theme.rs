@@ -163,13 +163,13 @@ pub fn gradient_fill(painter: &Painter, points: &[Pos2], top: Color32, bottom: C
 /// no blur, so stacked low-alpha strokes fake the bloom.
 pub fn glow_outline(painter: &Painter, points: Vec<Pos2>, color: Color32) {
     glow_passes(painter, &points, color, 1.0);
-    painter.add(Shape::closed_line(points, Stroke::new(1.0, color)));
+    painter.add(Shape::closed_line(points, Stroke::new(1.0_f32, color)));
 }
 
 /// Just the translucent bloom passes of [`glow_outline`], scaled by `strength`
 /// (0..=1) so animated widgets can fade the glow in and out.
 pub fn glow_passes(painter: &Painter, points: &[Pos2], color: Color32, strength: f32) {
-    for (w, a) in [(5.0, 16.0), (2.5, 44.0)] {
+    for (w, a) in [(5.0_f32, 16.0), (2.5_f32, 44.0)] {
         painter.add(Shape::closed_line(
             points.to_vec(),
             Stroke::new(w, alpha(color, (a * strength) as u8)),
@@ -204,7 +204,7 @@ pub fn fade_rule(painter: &Painter, start: Pos2, len: f32, color: Color32) {
     for i in 0..SEGS {
         let fade = 1.0 - i as f32 / SEGS as f32;
         let x = start.x + seg * i as f32;
-        let stroke = Stroke::new(1.0, alpha(color, (fade * 200.0) as u8));
+        let stroke = Stroke::new(1.0_f32, alpha(color, (fade * 200.0) as u8));
         painter.line_segment([pos2(x, start.y), pos2(x + seg, start.y)], stroke);
     }
 }
@@ -260,7 +260,7 @@ pub fn backdrop(painter: &Painter, rect: Rect) {
         let a = if i % 4 == 0 { 16 } else { 7 };
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.0, alpha(ACCENT, a)),
+            Stroke::new(1.0_f32, alpha(ACCENT, a)),
         );
         x += step;
         i += 1;
@@ -271,7 +271,7 @@ pub fn backdrop(painter: &Painter, rect: Rect) {
         let a = if i % 4 == 0 { 16 } else { 7 };
         painter.line_segment(
             [pos2(rect.left(), y), pos2(rect.right(), y)],
-            Stroke::new(1.0, alpha(ACCENT, a)),
+            Stroke::new(1.0_f32, alpha(ACCENT, a)),
         );
         y += step;
         i += 1;
@@ -281,7 +281,7 @@ pub fn backdrop(painter: &Painter, rect: Rect) {
 /// CRT scanlines: a 1px darkening line every 3pt, drawn over the whole frame.
 /// Alpha is low enough to read as texture, not stripes.
 pub fn scanlines(painter: &Painter, rect: Rect) {
-    let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 0, 0, 26));
+    let stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(0, 0, 0, 26));
     let mut y = rect.top();
     while y < rect.bottom() {
         painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], stroke);
@@ -321,7 +321,7 @@ pub fn apply(ctx: &egui::Context) {
     v.extreme_bg_color = BG0;
     // Row stripe: halfway between panel and widget background.
     v.faint_bg_color = Color32::from_rgb(0x0d, 0x14, 0x21);
-    v.window_stroke = Stroke::new(1.0, ACCENT);
+    v.window_stroke = Stroke::new(1.0_f32, ACCENT);
     v.window_corner_radius = CornerRadius::ZERO;
     v.menu_corner_radius = CornerRadius::ZERO;
     // Cyan bloom instead of drop shadows: dialogs glow, they don't float.
@@ -338,7 +338,7 @@ pub fn apply(ctx: &egui::Context) {
         color: alpha(ACCENT, 35),
     };
     v.selection.bg_fill = alpha(ACCENT, 45);
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
+    v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
     v.hyperlink_color = ACCENT;
 
     let w = &mut v.widgets;
@@ -354,29 +354,29 @@ pub fn apply(ctx: &egui::Context) {
     }
     w.noninteractive.bg_fill = BG1;
     w.noninteractive.weak_bg_fill = BG1;
-    w.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
+    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    w.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT);
 
     w.inactive.bg_fill = BG2;
     w.inactive.weak_bg_fill = BG2;
-    w.inactive.bg_stroke = Stroke::new(1.0, BORDER);
-    w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    w.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    w.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
 
     // The "glow": hovering swaps the border to accent cyan.
     w.hovered.bg_fill = BG3;
     w.hovered.weak_bg_fill = BG3;
-    w.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
-    w.hovered.fg_stroke = Stroke::new(1.0, BRIGHT);
+    w.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    w.hovered.fg_stroke = Stroke::new(1.0_f32, BRIGHT);
 
     w.active.bg_fill = BG3;
     w.active.weak_bg_fill = BG3;
-    w.active.bg_stroke = Stroke::new(1.0, ACCENT);
-    w.active.fg_stroke = Stroke::new(1.0, ACCENT);
+    w.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    w.active.fg_stroke = Stroke::new(1.0_f32, ACCENT);
 
     w.open.bg_fill = BG2;
     w.open.weak_bg_fill = BG2;
-    w.open.bg_stroke = Stroke::new(1.0, BORDER);
-    w.open.fg_stroke = Stroke::new(1.0, TEXT);
+    w.open.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    w.open.fg_stroke = Stroke::new(1.0_f32, TEXT);
 
     ctx.set_global_style(style);
 }

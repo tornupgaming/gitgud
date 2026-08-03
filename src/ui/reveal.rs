@@ -46,7 +46,10 @@ pub(crate) fn hud_modal<R>(
     // The plate lifts out of the void as the frame ignites to the accent.
     let frame = Frame::new()
         .fill(BG0.lerp_to_gamma(BG1, t))
-        .stroke(Stroke::new(1.0, theme::alpha(accent, (255.0 * t) as u8)))
+        .stroke(Stroke::new(
+            1.0_f32,
+            theme::alpha(accent, (255.0 * t) as u8),
+        ))
         .inner_margin(Margin::same(14));
     let modal = Modal::new(Id::new(id))
         .frame(frame)
@@ -99,7 +102,7 @@ fn entrance(p: &Painter, rect: Rect, accent: Color32, t: f32) {
         p,
         rect.expand(reach),
         13.0 * t,
-        Stroke::new(1.5, theme::alpha(accent, (230.0 * t) as u8)),
+        Stroke::new(1.5_f32, theme::alpha(accent, (230.0 * t) as u8)),
     );
     // Bloom around the plate silhouette, intensifying as it locks in.
     theme::glow_passes(p, &corners(rect), accent, t);
@@ -108,7 +111,7 @@ fn entrance(p: &Painter, rect: Rect, accent: Color32, t: f32) {
         let env = (t * std::f32::consts::PI).sin();
         let y = lerp(rect.top()..=rect.bottom(), t);
         let clip = p.with_clip_rect(rect.expand(2.0));
-        for (w, a) in [(6.0, 26.0), (2.0, 120.0)] {
+        for (w, a) in [(6.0_f32, 26.0), (2.0_f32, 120.0)] {
             clip.line_segment(
                 [pos2(rect.left(), y), pos2(rect.right(), y)],
                 Stroke::new(w, theme::alpha(BRIGHT, (a * env) as u8)),
