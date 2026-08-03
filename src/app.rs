@@ -7,7 +7,7 @@
 //! so they collect into a frame-local `Vec<Job>` flushed after layout.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -146,6 +146,11 @@ pub struct RepoTab {
     /// Set by the worktree watcher thread; the frame loop turns it into a
     /// `Refresh` once the tab is idle.
     fs_dirty: Arc<AtomicBool>,
+    /// Set by the watcher when a git ref moved (`.git/HEAD`, `refs/**`,
+    /// `packed-refs`) -- an external commit, checkout, fetch, or gc. Unlike
+    /// `fs_dirty` this also reloads history, so the graph picks up commits
+    /// made outside the app without re-walking on every worktree save.
+    refs_dirty: Arc<AtomicBool>,
     /// Keeps the watcher's backend thread alive; dropped with the tab.
     watcher: Option<notify::RecommendedWatcher>,
     last_auto_refresh: Instant,
@@ -190,6 +195,7 @@ impl RepoTab {
             committing: false,
             net_ops: Vec::new(),
             fs_dirty: Arc::new(AtomicBool::new(false)),
+            refs_dirty: Arc::new(AtomicBool::new(false)),
             watcher: None,
             last_auto_refresh: Instant::now(),
         }
@@ -456,6 +462,8 @@ impl GitGudApp {
     /// refresh decision happens on the UI thread, where the debounce state is.
     fn spawn_watcher(tab: &mut RepoTab, ctx: &egui::Context) {
         let dirty = tab.fs_dirty.clone();
+        let refs_dirty = tab.refs_dirty.clone();
+        let git_dir = tab.path.join(".git");
         let ctx = ctx.clone();
         tab.watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             // Access events are reads; they can't change git status.
@@ -463,6 +471,9 @@ impl GitGudApp {
                 && !matches!(ev.kind, notify::EventKind::Access(_))
             {
                 dirty.store(true, Ordering::Relaxed);
+                if ev.paths.iter().any(|p| is_ref_change(&git_dir, p)) {
+                    refs_dirty.store(true, Ordering::Relaxed);
+                }
                 // Delayed wake batches an event burst into one frame.
                 ctx.request_repaint_after(Duration::from_millis(250));
             }
@@ -749,6 +760,21 @@ fn net_label(job: &Job) -> Option<&'static str> {
     }
 }
 
+/// Whether a watcher event path means a git ref moved: `.git/HEAD` (checkout),
+/// anything under `.git/refs/` (commit, branch, fetch), or `.git/packed-refs`
+/// (gc). Git updates refs by renaming a `.lock` file, so both the lock and the
+/// final path land under these prefixes. Paths outside `.git` -- or inside a
+/// gitdir that lives elsewhere (`.git` file) -- never match.
+fn is_ref_change(git_dir: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(git_dir) else {
+        return false;
+    };
+    matches!(
+        rel.components().next().and_then(|c| c.as_os_str().to_str()),
+        Some("HEAD" | "HEAD.lock" | "refs" | "packed-refs" | "packed-refs.lock")
+    )
+}
+
 /// The op label a terminal update concludes, so its progress-modal entry can
 /// be popped, or `None` for replies that aren't a network op's conclusion. A
 /// `Diverged` reply ends the op too -- it hands the flow off to the reconcile
@@ -843,11 +869,15 @@ impl eframe::App for GitGudApp {
         if let Some(t) = self.tabs.get_mut(self.active) {
             if t.loaded && (f5 || regained) {
                 jobs.push(Job::Refresh { id: t.id });
-                if f5 {
+                // F5 always re-walks; a refocus only when refs moved while we
+                // were away (external commit/checkout/fetch), so alt-tabbing
+                // doesn't reset history paging for nothing.
+                if f5 || t.refs_dirty.swap(false, Ordering::Relaxed) {
                     jobs.push(Job::LoadHistory { id: t.id, skip: 0 });
                 }
                 // A manual refresh covers whatever the watcher saw.
                 t.fs_dirty.store(false, Ordering::Relaxed);
+                t.refs_dirty.store(false, Ordering::Relaxed);
                 t.last_auto_refresh = Instant::now();
             } else if t.loaded && t.in_flight == 0 && t.fs_dirty.load(Ordering::Relaxed) {
                 let since = t.last_auto_refresh.elapsed();
@@ -855,6 +885,9 @@ impl eframe::App for GitGudApp {
                     t.fs_dirty.store(false, Ordering::Relaxed);
                     t.last_auto_refresh = Instant::now();
                     jobs.push(Job::Refresh { id: t.id });
+                    if t.refs_dirty.swap(false, Ordering::Relaxed) {
+                        jobs.push(Job::LoadHistory { id: t.id, skip: 0 });
+                    }
                 } else {
                     // Too soon -- schedule a wake for when the gap expires.
                     ui.ctx().request_repaint_after(AUTO_REFRESH_GAP - since);
@@ -1029,6 +1062,43 @@ impl eframe::App for GitGudApp {
         if let Some(rel) = open {
             let abs = self.tabs[self.active].path.join(rel);
             self.open_repo(abs);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ref_paths_are_ref_changes() {
+        let git = PathBuf::from("/repo/.git");
+        for p in [
+            "/repo/.git/HEAD",
+            "/repo/.git/HEAD.lock",
+            "/repo/.git/packed-refs",
+            "/repo/.git/packed-refs.lock",
+            "/repo/.git/refs/heads/main",
+            "/repo/.git/refs/heads/main.lock",
+            "/repo/.git/refs/remotes/origin/main",
+        ] {
+            assert!(is_ref_change(&git, Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn non_ref_paths_are_not_ref_changes() {
+        let git = PathBuf::from("/repo/.git");
+        for p in [
+            "/repo/src/main.rs",
+            "/repo/HEAD",
+            "/repo/.git/index",
+            "/repo/.git/objects/ab/cdef",
+            "/repo/.git/logs/HEAD",
+            "/repo/.git/COMMIT_EDITMSG",
+            "/other/.git/HEAD",
+        ] {
+            assert!(!is_ref_change(&git, Path::new(p)), "{p}");
         }
     }
 }
