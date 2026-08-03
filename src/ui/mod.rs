@@ -42,6 +42,15 @@ pub(crate) fn vscroll(id_salt: &str) -> ScrollArea {
         .auto_shrink([false, false])
 }
 
+/// [`vscroll`] with the horizontal axis enabled too, for content that can
+/// outgrow its panel sideways (long diff lines).
+pub(crate) fn hvscroll(id_salt: &str) -> ScrollArea {
+    ScrollArea::both()
+        .id_salt(id_salt)
+        .scroll_source(ScrollSource::SCROLL_BAR | ScrollSource::MOUSE_WHEEL)
+        .auto_shrink([false, false])
+}
+
 /// A floating HUD module: chamfered plate, glowing border, title band with
 /// letter-spaced caps and a right-aligned readout, content below. Every panel
 /// in the app is one of these, floating over the gridded void.

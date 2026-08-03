@@ -10,7 +10,7 @@ use eframe::egui::{
 };
 
 use super::highlight::{LineHighlighter, Spans};
-use super::{HudButton, char_w, module, text_width, truncate_right, vscroll};
+use super::{HudButton, char_w, hvscroll, module, text_width, truncate_right};
 use crate::app::RepoTab;
 use crate::git::{DiffData, DiffKey, DiffLine, LineKind};
 use crate::theme::{self, ACCENT, AMBER, BG2, BORDER, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
@@ -29,6 +29,8 @@ pub struct DiffView {
     pub adds: usize,
     pub dels: usize,
     pub rows: Vec<DiffRow>,
+    /// Widest row in characters; sizes the horizontal scroll extent.
+    pub max_chars: usize,
 }
 
 /// One virtualized row of the diff body.
@@ -48,6 +50,7 @@ impl DiffView {
     /// same pass so the render path never touches syntect.
     pub fn build(data: DiffData) -> Self {
         let mut rows = Vec::new();
+        let mut max_chars = 0;
         for f in data.files {
             let binary = f.binary;
             let mut hl = LineHighlighter::for_path(&f.path);
@@ -60,6 +63,7 @@ impl DiffView {
                 rows.push(DiffRow::Binary);
             } else {
                 rows.extend(f.lines.into_iter().map(|l| {
+                    max_chars = max_chars.max(l.text.chars().count());
                     let spans = (l.kind != LineKind::Hunk)
                         .then(|| hl.spans(&l.text))
                         .flatten();
@@ -71,6 +75,7 @@ impl DiffView {
             adds: data.adds,
             dels: data.dels,
             rows,
+            max_chars,
         }
     }
 
@@ -232,11 +237,16 @@ fn body(ui: &mut Ui, view: &DiffView) {
     ui.spacing_mut().item_spacing.y = 0.0;
     let cw = char_w(ui, &font);
     let gutter_w = cw * 2.0 * GUTTER_CHARS + 16.0;
+    // Rows span the widest line so the scroll area gains a horizontal extent;
+    // narrow diffs still fill the viewport.
+    let content_w = gutter_w + cw * view.max_chars as f32 + 8.0;
 
-    vscroll("diff").show_rows(ui, row_h, view.rows.len(), |ui, range| {
+    hvscroll("diff").show_rows(ui, row_h, view.rows.len(), |ui, range| {
+        let row_w = ui.available_width().max(content_w);
+        // The visible viewport, for pinning file headers while scrolled right.
+        let vis = ui.clip_rect();
         for i in range {
-            let (rect, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(vec2(row_w, row_h), Sense::hover());
             if !ui.is_rect_visible(rect) {
                 continue;
             }
@@ -249,8 +259,12 @@ fn body(ui: &mut Ui, view: &DiffView) {
                         [rect.left_bottom(), rect.right_bottom()],
                         Stroke::new(1.0_f32, theme::alpha(ACCENT, 90)),
                     );
+                    // Pinned to the visible viewport, not the (possibly much
+                    // wider) row, so the header reads while scrolled right.
+                    let left = vis.left().max(rect.left());
+                    let right = vis.right().min(rect.right());
                     let r = p.text(
-                        pos2(rect.right() - 6.0, y),
+                        pos2(right - 6.0, y),
                         Align2::RIGHT_CENTER,
                         format!("−{dels}"),
                         font.clone(),
@@ -264,7 +278,7 @@ fn body(ui: &mut Ui, view: &DiffView) {
                         GREEN,
                     );
                     p.text(
-                        pos2(rect.left() + 8.0, y),
+                        pos2(left + 8.0, y),
                         Align2::LEFT_CENTER,
                         format!("▶ {path}"),
                         font.clone(),
