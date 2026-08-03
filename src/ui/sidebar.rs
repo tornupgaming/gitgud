@@ -58,9 +58,7 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
     let readout = format!("{:02}", tab.branches.len());
     let action = module(ui, None, "BRANCHES", &readout, |ui| {
-        vscroll("branches")
-            .show(ui, |ui| branches(ui, tab))
-            .inner
+        vscroll("branches").show(ui, |ui| branches(ui, tab)).inner
     });
     match action {
         Some(BranchAction::Checkout(name)) => {

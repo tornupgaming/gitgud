@@ -209,61 +209,60 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
         let mut open: Option<String> = None;
         let font = TextStyle::Body.resolve(ui.style());
         let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
-        vscroll("commit_files")
-            .show(ui, |ui| {
-                for f in &data.files {
-                    let (rect, resp) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
-                    if !ui.is_rect_visible(rect) {
-                        continue;
-                    }
-                    let selected = tab.commit_file.as_deref() == Some(f.path.as_str());
-                    let p = ui.painter().with_clip_rect(rect);
-                    if selected {
-                        p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(ACCENT, 24));
-                    } else if resp.hovered() {
-                        p.rect_filled(rect, CornerRadius::ZERO, BG3);
-                    }
-                    let y = rect.center().y;
-                    let r = p.text(
-                        pos2(rect.right() - 4.0, y),
-                        Align2::RIGHT_CENTER,
-                        format!("−{}", f.dels),
-                        font.clone(),
-                        RED,
-                    );
-                    let r = p.text(
-                        pos2(r.left() - 6.0, y),
-                        Align2::RIGHT_CENTER,
-                        format!("+{}", f.adds),
-                        font.clone(),
-                        GREEN,
-                    );
-                    let path = truncate_left(
-                        ui,
-                        &f.path,
-                        &font,
-                        (r.left() - 8.0 - rect.left() - 4.0).max(0.0),
-                    );
-                    p.text(
-                        pos2(rect.left() + 4.0, y),
-                        Align2::LEFT_CENTER,
-                        path,
-                        font.clone(),
-                        TEXT,
-                    );
-                    if selected {
-                        theme::glow_outline(
-                            &p,
-                            theme::chamfer(rect.shrink(1.0), 6.0),
-                            theme::alpha(ACCENT, 200),
-                        );
-                    }
-                    if resp.clicked() {
-                        open = Some(f.path.clone());
-                    }
+        vscroll("commit_files").show(ui, |ui| {
+            for f in &data.files {
+                let (rect, resp) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+                if !ui.is_rect_visible(rect) {
+                    continue;
                 }
-            });
+                let selected = tab.commit_file.as_deref() == Some(f.path.as_str());
+                let p = ui.painter().with_clip_rect(rect);
+                if selected {
+                    p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(ACCENT, 24));
+                } else if resp.hovered() {
+                    p.rect_filled(rect, CornerRadius::ZERO, BG3);
+                }
+                let y = rect.center().y;
+                let r = p.text(
+                    pos2(rect.right() - 4.0, y),
+                    Align2::RIGHT_CENTER,
+                    format!("−{}", f.dels),
+                    font.clone(),
+                    RED,
+                );
+                let r = p.text(
+                    pos2(r.left() - 6.0, y),
+                    Align2::RIGHT_CENTER,
+                    format!("+{}", f.adds),
+                    font.clone(),
+                    GREEN,
+                );
+                let path = truncate_left(
+                    ui,
+                    &f.path,
+                    &font,
+                    (r.left() - 8.0 - rect.left() - 4.0).max(0.0),
+                );
+                p.text(
+                    pos2(rect.left() + 4.0, y),
+                    Align2::LEFT_CENTER,
+                    path,
+                    font.clone(),
+                    TEXT,
+                );
+                if selected {
+                    theme::glow_outline(
+                        &p,
+                        theme::chamfer(rect.shrink(1.0), 6.0),
+                        theme::alpha(ACCENT, 200),
+                    );
+                }
+                if resp.clicked() {
+                    open = Some(f.path.clone());
+                }
+            }
+        });
 
         if let Some(path) = open {
             // Built synchronously from the already-loaded commit diff -- no job.
@@ -326,32 +325,31 @@ fn confirm_discard(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 }
 
 fn changes(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
-    vscroll("changes")
-        .show(ui, |ui| {
-            let staged_label = format!("STAGED · {:02}", tab.staged.len());
-            let any_staged = !tab.staged.is_empty();
-            if list_header(ui, &staged_label, &[("UNSTAGE ALL", any_staged)]) == Some(0) {
-                jobs.push(Job::Unstage {
-                    id: tab.id,
-                    path: None,
-                });
-            }
-            file_rows(ui, tab, true, jobs);
-            ui.add_space(10.0);
-            let unstaged_label = format!("UNSTAGED · {:02}", tab.unstaged.len());
-            let any_unstaged = !tab.unstaged.is_empty();
-            let actions = [("STAGE ALL", any_unstaged), ("DISCARD ALL", any_unstaged)];
-            match list_header(ui, &unstaged_label, &actions) {
-                Some(0) => jobs.push(Job::Stage {
-                    id: tab.id,
-                    path: None,
-                }),
-                // Arms the confirm modal; the job fires there.
-                Some(1) => tab.pending_discard = Some(None),
-                _ => {}
-            }
-            file_rows(ui, tab, false, jobs);
-        });
+    vscroll("changes").show(ui, |ui| {
+        let staged_label = format!("STAGED · {:02}", tab.staged.len());
+        let any_staged = !tab.staged.is_empty();
+        if list_header(ui, &staged_label, &[("UNSTAGE ALL", any_staged)]) == Some(0) {
+            jobs.push(Job::Unstage {
+                id: tab.id,
+                path: None,
+            });
+        }
+        file_rows(ui, tab, true, jobs);
+        ui.add_space(10.0);
+        let unstaged_label = format!("UNSTAGED · {:02}", tab.unstaged.len());
+        let any_unstaged = !tab.unstaged.is_empty();
+        let actions = [("STAGE ALL", any_unstaged), ("DISCARD ALL", any_unstaged)];
+        match list_header(ui, &unstaged_label, &actions) {
+            Some(0) => jobs.push(Job::Stage {
+                id: tab.id,
+                path: None,
+            }),
+            // Arms the confirm modal; the job fires there.
+            Some(1) => tab.pending_discard = Some(None),
+            _ => {}
+        }
+        file_rows(ui, tab, false, jobs);
+    });
 }
 
 /// Section header with right-aligned action buttons (first = rightmost).

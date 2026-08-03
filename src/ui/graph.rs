@@ -2,8 +2,8 @@
 //! with a WIP row, ref chips, and load-more paging.
 
 use eframe::egui::{
-    Align2, Color32, CornerRadius, Painter, Rect, Sense, Shape, Stroke, StrokeKind,
-    TextStyle, Ui, epaint::CubicBezierShape, pos2, vec2,
+    Align2, Color32, CornerRadius, Painter, Rect, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui,
+    epaint::CubicBezierShape, pos2, vec2,
 };
 
 use super::{HudButton, module, rel_time, text_width, truncate_right, vscroll};
@@ -68,27 +68,26 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         if tab.history_done { "" } else { "+" }
     );
     module(ui, None, "COMMIT GRAPH", &readout, |ui| {
-        vscroll("graph")
-            .show_rows(ui, row_h, total, |ui, range| {
-                let first = range.start;
-                for i in range {
-                    if wip && i == 0 {
-                        wip_row(ui, tab, &g, &mut action);
-                    } else if i - wip_rows == tab.commits.len() {
-                        let btn = HudButton::new("▼ LOAD MORE")
-                            .text_color(DIM)
-                            .min_size(vec2(ui.available_width(), row_h));
-                        if ui.add(btn).clicked() {
-                            action = Some(Action::LoadMore);
-                        }
-                    } else {
-                        let ci = i - wip_rows;
-                        // The first visible row also draws the previous row's
-                        // edges so segments entering from above don't pop in.
-                        commit_row(ui, tab, ci, &g, i == first && ci > 0, &mut action);
+        vscroll("graph").show_rows(ui, row_h, total, |ui, range| {
+            let first = range.start;
+            for i in range {
+                if wip && i == 0 {
+                    wip_row(ui, tab, &g, &mut action);
+                } else if i - wip_rows == tab.commits.len() {
+                    let btn = HudButton::new("▼ LOAD MORE")
+                        .text_color(DIM)
+                        .min_size(vec2(ui.available_width(), row_h));
+                    if ui.add(btn).clicked() {
+                        action = Some(Action::LoadMore);
                     }
+                } else {
+                    let ci = i - wip_rows;
+                    // The first visible row also draws the previous row's
+                    // edges so segments entering from above don't pop in.
+                    commit_row(ui, tab, ci, &g, i == first && ci > 0, &mut action);
                 }
-            });
+            }
+        });
     });
 
     match action {

@@ -5,8 +5,8 @@
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
-    Align, Align2, CornerRadius, Layout, Rect, Sense, Spinner, Stroke, StrokeKind,
-    TextStyle, Ui, pos2, vec2,
+    Align, Align2, CornerRadius, Layout, Rect, Sense, Spinner, Stroke, StrokeKind, TextStyle, Ui,
+    pos2, vec2,
 };
 
 use super::highlight::{LineHighlighter, Spans};
@@ -233,125 +233,124 @@ fn body(ui: &mut Ui, view: &DiffView) {
     let cw = char_w(ui, &font);
     let gutter_w = cw * 2.0 * GUTTER_CHARS + 16.0;
 
-    vscroll("diff")
-        .show_rows(ui, row_h, view.rows.len(), |ui, range| {
-            for i in range {
-                let (rect, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
-                if !ui.is_rect_visible(rect) {
-                    continue;
+    vscroll("diff").show_rows(ui, row_h, view.rows.len(), |ui, range| {
+        for i in range {
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
+            if !ui.is_rect_visible(rect) {
+                continue;
+            }
+            let p = ui.painter().with_clip_rect(rect);
+            let y = rect.center().y;
+            match &view.rows[i] {
+                DiffRow::File { path, adds, dels } => {
+                    p.rect_filled(rect, CornerRadius::ZERO, BG2);
+                    p.line_segment(
+                        [rect.left_bottom(), rect.right_bottom()],
+                        Stroke::new(1.0, theme::alpha(ACCENT, 90)),
+                    );
+                    let r = p.text(
+                        pos2(rect.right() - 6.0, y),
+                        Align2::RIGHT_CENTER,
+                        format!("−{dels}"),
+                        font.clone(),
+                        RED,
+                    );
+                    p.text(
+                        pos2(r.left() - 8.0, y),
+                        Align2::RIGHT_CENTER,
+                        format!("+{adds}"),
+                        font.clone(),
+                        GREEN,
+                    );
+                    p.text(
+                        pos2(rect.left() + 8.0, y),
+                        Align2::LEFT_CENTER,
+                        format!("▶ {path}"),
+                        font.clone(),
+                        BRIGHT,
+                    );
                 }
-                let p = ui.painter().with_clip_rect(rect);
-                let y = rect.center().y;
-                match &view.rows[i] {
-                    DiffRow::File { path, adds, dels } => {
-                        p.rect_filled(rect, CornerRadius::ZERO, BG2);
-                        p.line_segment(
-                            [rect.left_bottom(), rect.right_bottom()],
-                            Stroke::new(1.0, theme::alpha(ACCENT, 90)),
-                        );
-                        let r = p.text(
-                            pos2(rect.right() - 6.0, y),
-                            Align2::RIGHT_CENTER,
-                            format!("−{dels}"),
-                            font.clone(),
-                            RED,
-                        );
-                        p.text(
-                            pos2(r.left() - 8.0, y),
-                            Align2::RIGHT_CENTER,
-                            format!("+{adds}"),
-                            font.clone(),
-                            GREEN,
-                        );
-                        p.text(
-                            pos2(rect.left() + 8.0, y),
-                            Align2::LEFT_CENTER,
-                            format!("▶ {path}"),
-                            font.clone(),
-                            BRIGHT,
-                        );
-                    }
-                    DiffRow::Binary => {
-                        p.text(
-                            pos2(rect.left() + gutter_w, y),
-                            Align2::LEFT_CENTER,
-                            "binary file",
-                            font.clone(),
-                            DIM,
-                        );
-                    }
-                    DiffRow::Line(l, spans) => {
-                        // Add/del reads off the background tint alone now that
-                        // the text carries syntax colours, so it runs a touch
-                        // stronger than the old 14.
-                        let (color, bg) = match l.kind {
-                            LineKind::Add => (TEXT, Some(theme::alpha(GREEN, 26))),
-                            LineKind::Del => (TEXT, Some(theme::alpha(RED, 26))),
-                            LineKind::Hunk => {
-                                (theme::alpha(ACCENT, 170), Some(theme::alpha(ACCENT, 10)))
-                            }
-                            LineKind::Ctx => (TEXT, None),
-                        };
-                        if let Some(bg) = bg {
-                            p.rect_filled(rect, CornerRadius::ZERO, bg);
+                DiffRow::Binary => {
+                    p.text(
+                        pos2(rect.left() + gutter_w, y),
+                        Align2::LEFT_CENTER,
+                        "binary file",
+                        font.clone(),
+                        DIM,
+                    );
+                }
+                DiffRow::Line(l, spans) => {
+                    // Add/del reads off the background tint alone now that
+                    // the text carries syntax colours, so it runs a touch
+                    // stronger than the old 14.
+                    let (color, bg) = match l.kind {
+                        LineKind::Add => (TEXT, Some(theme::alpha(GREEN, 26))),
+                        LineKind::Del => (TEXT, Some(theme::alpha(RED, 26))),
+                        LineKind::Hunk => {
+                            (theme::alpha(ACCENT, 170), Some(theme::alpha(ACCENT, 10)))
                         }
-                        if l.kind != LineKind::Hunk {
-                            if l.old_no > 0 {
-                                p.text(
-                                    pos2(rect.left() + cw * GUTTER_CHARS + 4.0, y),
-                                    Align2::RIGHT_CENTER,
-                                    l.old_no,
-                                    font.clone(),
-                                    DIM,
-                                );
-                            }
-                            if l.new_no > 0 {
-                                p.text(
-                                    pos2(rect.left() + cw * 2.0 * GUTTER_CHARS + 8.0, y),
-                                    Align2::RIGHT_CENTER,
-                                    l.new_no,
-                                    font.clone(),
-                                    DIM,
-                                );
-                            }
-                            // Gutter rule separating line numbers from code.
-                            let gx = rect.left() + gutter_w - 6.0;
-                            p.line_segment(
-                                [pos2(gx, rect.top()), pos2(gx, rect.bottom())],
-                                Stroke::new(1.0, theme::alpha(BORDER, 160)),
+                        LineKind::Ctx => (TEXT, None),
+                    };
+                    if let Some(bg) = bg {
+                        p.rect_filled(rect, CornerRadius::ZERO, bg);
+                    }
+                    if l.kind != LineKind::Hunk {
+                        if l.old_no > 0 {
+                            p.text(
+                                pos2(rect.left() + cw * GUTTER_CHARS + 4.0, y),
+                                Align2::RIGHT_CENTER,
+                                l.old_no,
+                                font.clone(),
+                                DIM,
                             );
                         }
-                        match spans {
-                            Some(spans) if !spans.is_empty() => {
-                                let mut job = LayoutJob::default();
-                                for (color, range) in spans {
-                                    job.append(
-                                        &l.text[range.clone()],
-                                        0.0,
-                                        TextFormat {
-                                            font_id: font.clone(),
-                                            color: *color,
-                                            ..Default::default()
-                                        },
-                                    );
-                                }
-                                let galley = ui.fonts_mut(|f| f.layout_job(job));
-                                let top = y - galley.size().y * 0.5;
-                                p.galley(pos2(rect.left() + gutter_w, top), galley, TEXT);
-                            }
-                            _ => {
-                                p.text(
-                                    pos2(rect.left() + gutter_w, y),
-                                    Align2::LEFT_CENTER,
-                                    &l.text,
-                                    font.clone(),
-                                    color,
+                        if l.new_no > 0 {
+                            p.text(
+                                pos2(rect.left() + cw * 2.0 * GUTTER_CHARS + 8.0, y),
+                                Align2::RIGHT_CENTER,
+                                l.new_no,
+                                font.clone(),
+                                DIM,
+                            );
+                        }
+                        // Gutter rule separating line numbers from code.
+                        let gx = rect.left() + gutter_w - 6.0;
+                        p.line_segment(
+                            [pos2(gx, rect.top()), pos2(gx, rect.bottom())],
+                            Stroke::new(1.0, theme::alpha(BORDER, 160)),
+                        );
+                    }
+                    match spans {
+                        Some(spans) if !spans.is_empty() => {
+                            let mut job = LayoutJob::default();
+                            for (color, range) in spans {
+                                job.append(
+                                    &l.text[range.clone()],
+                                    0.0,
+                                    TextFormat {
+                                        font_id: font.clone(),
+                                        color: *color,
+                                        ..Default::default()
+                                    },
                                 );
                             }
+                            let galley = ui.fonts_mut(|f| f.layout_job(job));
+                            let top = y - galley.size().y * 0.5;
+                            p.galley(pos2(rect.left() + gutter_w, top), galley, TEXT);
+                        }
+                        _ => {
+                            p.text(
+                                pos2(rect.left() + gutter_w, y),
+                                Align2::LEFT_CENTER,
+                                &l.text,
+                                font.clone(),
+                                color,
+                            );
                         }
                     }
                 }
             }
-        });
+        }
+    });
 }

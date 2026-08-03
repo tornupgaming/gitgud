@@ -34,12 +34,11 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             action = Some(SubAction::Update(None));
         }
         ui.add_space(6.0);
-        vscroll("submodules")
-            .show(ui, |ui| {
-                if let Some(a) = rows(ui, tab) {
-                    action = Some(a);
-                }
-            });
+        vscroll("submodules").show(ui, |ui| {
+            if let Some(a) = rows(ui, tab) {
+                action = Some(a);
+            }
+        });
         action
     });
     match action {

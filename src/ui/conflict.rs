@@ -6,8 +6,8 @@
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Layout, Painter, Rect, Sense,
-    Spinner, Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
+    Align, Align2, Color32, CornerRadius, FontId, Layout, Painter, Rect, Sense, Spinner, Stroke,
+    StrokeKind, TextStyle, Ui, pos2, vec2,
 };
 
 use super::highlight::{LineHighlighter, Spans};
@@ -336,77 +336,73 @@ fn body(ui: &mut Ui, rows: &[Row], choices: &mut [Choice], ours_label: &str, the
     let row_h = ui.text_style_height(&TextStyle::Monospace) + 2.0 + ui.spacing().item_spacing.y;
     ui.spacing_mut().item_spacing.y = 0.0;
 
-    vscroll("conflict")
-        .show_rows(ui, row_h, rows.len(), |ui, range| {
-            for i in range {
-                let (rect, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
-                if !ui.is_rect_visible(rect) {
-                    continue;
+    vscroll("conflict").show_rows(ui, row_h, rows.len(), |ui, range| {
+        for i in range {
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
+            if !ui.is_rect_visible(rect) {
+                continue;
+            }
+            match &rows[i] {
+                Row::Context { text, spans } => {
+                    let p = ui.painter().with_clip_rect(rect);
+                    // Slim gutter spine in place of line numbers (they are
+                    // ambiguous mid-conflict); the block side bars sit on
+                    // the same x so it reads as one rail.
+                    let gx = rect.left() + 1.0;
+                    p.line_segment(
+                        [pos2(gx, rect.top()), pos2(gx, rect.bottom())],
+                        Stroke::new(1.0, theme::alpha(BORDER, 160)),
+                    );
+                    paint_code(ui, &p, rect, &font, text, spans, TEXT);
                 }
-                match &rows[i] {
-                    Row::Context { text, spans } => {
-                        let p = ui.painter().with_clip_rect(rect);
-                        // Slim gutter spine in place of line numbers (they are
-                        // ambiguous mid-conflict); the block side bars sit on
-                        // the same x so it reads as one rail.
-                        let gx = rect.left() + 1.0;
-                        p.line_segment(
-                            [pos2(gx, rect.top()), pos2(gx, rect.bottom())],
-                            Stroke::new(1.0, theme::alpha(BORDER, 160)),
-                        );
+                Row::Header { block } => {
+                    block_header(ui, rect, *block, choices, ours_label, theirs_label, &small);
+                }
+                Row::Line {
+                    block,
+                    side,
+                    last,
+                    text,
+                    spans,
+                } => {
+                    let p = ui.painter().with_clip_rect(rect);
+                    let kept = match choices[*block] {
+                        Choice::Unresolved | Choice::Both => true,
+                        Choice::Ours => *side == Side::Ours,
+                        Choice::Theirs => *side == Side::Theirs,
+                    };
+                    let col = side.color();
+                    let (bg_a, bar_a) = if kept { (26, 255) } else { (10, 90) };
+                    p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(col, bg_a));
+                    p.rect_filled(
+                        Rect::from_min_max(rect.left_top(), pos2(rect.left() + 2.0, rect.bottom())),
+                        CornerRadius::ZERO,
+                        theme::alpha(col, bar_a),
+                    );
+                    if kept {
                         paint_code(ui, &p, rect, &font, text, spans, TEXT);
-                    }
-                    Row::Header { block } => {
-                        block_header(ui, rect, *block, choices, ours_label, theirs_label, &small);
-                    }
-                    Row::Line {
-                        block,
-                        side,
-                        last,
-                        text,
-                        spans,
-                    } => {
-                        let p = ui.painter().with_clip_rect(rect);
-                        let kept = match choices[*block] {
-                            Choice::Unresolved | Choice::Both => true,
-                            Choice::Ours => *side == Side::Ours,
-                            Choice::Theirs => *side == Side::Theirs,
-                        };
-                        let col = side.color();
-                        let (bg_a, bar_a) = if kept { (26, 255) } else { (10, 90) };
-                        p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(col, bg_a));
-                        p.rect_filled(
-                            Rect::from_min_max(
-                                rect.left_top(),
-                                pos2(rect.left() + 2.0, rect.bottom()),
-                            ),
-                            CornerRadius::ZERO,
-                            theme::alpha(col, bar_a),
+                    } else {
+                        // The rejected side drops its syntax colors so the
+                        // kept side reads as the file's future content.
+                        p.text(
+                            pos2(rect.left() + GUTTER_W, rect.center().y),
+                            Align2::LEFT_CENTER,
+                            text,
+                            font.clone(),
+                            DIM,
                         );
-                        if kept {
-                            paint_code(ui, &p, rect, &font, text, spans, TEXT);
-                        } else {
-                            // The rejected side drops its syntax colors so the
-                            // kept side reads as the file's future content.
-                            p.text(
-                                pos2(rect.left() + GUTTER_W, rect.center().y),
-                                Align2::LEFT_CENTER,
-                                text,
-                                font.clone(),
-                                DIM,
-                            );
-                        }
-                        if *last {
-                            p.line_segment(
-                                [rect.left_bottom(), rect.right_bottom()],
-                                Stroke::new(1.0, BORDER),
-                            );
-                        }
+                    }
+                    if *last {
+                        p.line_segment(
+                            [rect.left_bottom(), rect.right_bottom()],
+                            Stroke::new(1.0, BORDER),
+                        );
                     }
                 }
             }
-        });
+        }
+    });
 }
 
 /// One block's strip: "#{n}" + side labels left, OURS/THEIRS/BOTH toggles
