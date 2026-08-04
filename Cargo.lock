@@ -810,6 +810,7 @@ dependencies = [
  "notify",
  "rfd",
  "syntect",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

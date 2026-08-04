@@ -24,6 +24,11 @@ notify = { version = "8", default-features = false }
 # dump; yaml-load lets us add the Odin grammar the defaults lack.
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-onig", "yaml-load"] }
 
+# SystemParametersInfoW, to read the OS wheel-scroll-lines setting. Free:
+# winit already compiles this exact crate version and feature.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 # eframe is built with default-features off (to trim the wgpu/macOS extras), which
 # also drops winit's windowing backends. Windows always has Win32, but Linux needs
 # X11/Wayland enabled explicitly. Scoped to Linux so the Windows build is unchanged.

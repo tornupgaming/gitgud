@@ -333,6 +333,32 @@ pub struct GitGudApp {
     /// Status line for errors that no longer have a tab (e.g. a failed open).
     app_log: Option<(bool, String)>,
     prev_focused: bool,
+    /// Lines scrolled per mouse-wheel notch, from the OS where readable.
+    wheel_lines: f32,
+}
+
+/// How many lines one wheel notch scrolls. winit reports raw notches without
+/// applying the OS "lines per notch" setting, so we read it ourselves on
+/// Windows (`SPI_GETWHEELSCROLLLINES`); elsewhere there is no per-app setting
+/// to read. The 3-line convention felt sluggish in practice against our tight
+/// row heights, so the fallback is a notch brisker.
+fn wheel_scroll_lines() -> f32 {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SPI_GETWHEELSCROLLLINES, SystemParametersInfoW,
+        };
+        let mut lines: u32 = 0;
+        let ok = unsafe {
+            SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, (&raw mut lines).cast(), 0)
+        };
+        // u32::MAX is WHEEL_PAGESCROLL ("scroll one screen"); treat anything
+        // outside the settings UI's 1..=100 range as unconfigured.
+        if ok != 0 && (1..=100).contains(&lines) {
+            return lines as f32;
+        }
+    }
+    5.0
 }
 
 impl GitGudApp {
@@ -346,6 +372,7 @@ impl GitGudApp {
             picker: None,
             app_log: None,
             prev_focused: true,
+            wheel_lines: wheel_scroll_lines(),
         };
         for path in Self::load_repo_list() {
             app.open_repo(path);
@@ -830,16 +857,28 @@ impl eframe::App for GitGudApp {
     /// wheel only ever reports whole notches -- as already-smooth `Point`
     /// deltas, scaled by the same line speed so scroll distance and ctrl-scroll
     /// zoom are unchanged. Genuine wheel notches stay on the `Line` path, where
-    /// egui's smoothing of the big discrete steps is wanted.
+    /// egui's smoothing of the big discrete steps is wanted -- but scaled by
+    /// the OS lines-per-notch setting ([`wheel_scroll_lines`]), which winit
+    /// never applies, so wheel scrolling covers the same distance as in other
+    /// applications. Zooming (the command modifier) is left unscaled: a notch
+    /// is one zoom step regardless of scroll speed.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         let line_px = ctx.options(|o| o.input_options.line_scroll_speed);
         for ev in &mut raw_input.events {
-            if let egui::Event::MouseWheel { unit, delta, .. } = ev
+            if let egui::Event::MouseWheel {
+                unit,
+                delta,
+                modifiers,
+                ..
+            } = ev
                 && *unit == egui::MouseWheelUnit::Line
-                && (delta.x.fract() != 0.0 || delta.y.fract() != 0.0)
             {
-                *delta *= line_px;
-                *unit = egui::MouseWheelUnit::Point;
+                if delta.x.fract() != 0.0 || delta.y.fract() != 0.0 {
+                    *delta *= line_px;
+                    *unit = egui::MouseWheelUnit::Point;
+                } else if !modifiers.command {
+                    *delta *= self.wheel_lines;
+                }
             }
         }
     }
