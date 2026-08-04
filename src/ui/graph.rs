@@ -2,11 +2,11 @@
 //! with a WIP row, ref chips, and load-more paging.
 
 use eframe::egui::{
-    Align2, Color32, CornerRadius, Painter, Rect, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui,
-    epaint::CubicBezierShape, pos2, vec2,
+    Align, Align2, Color32, CornerRadius, Layout, Painter, Rect, Sense, Shape, Stroke, StrokeKind,
+    TextStyle, Ui, epaint::CubicBezierShape, pos2, vec2,
 };
 
-use super::{HudButton, module, rel_time, text_width, truncate_right, vscroll};
+use super::{HudButton, module, rel_time, sub_label, text_width, truncate_right, vscroll};
 use crate::app::{NewBranch, RepoTab};
 use crate::git::graph::Edge;
 use crate::git::{DiffKey, Job};
@@ -38,6 +38,19 @@ enum Action {
     /// Arm the new-branch dialog at a commit: (full id, short id for display).
     CreateBranch(String, String),
     LoadMore,
+    /// Flip branch focus (dim commits other branches also reach).
+    ToggleFocus,
+}
+
+/// How far dimmed rows fade. Low enough to read as "background", high
+/// enough that the graph topology stays traceable.
+const FOCUS_FADE: f32 = 0.22;
+
+/// Branch focus is active: the toggle is on and there is anything to
+/// contrast (on a branch with no unique commits, dimming everything would
+/// just read as a broken display).
+fn focus_active(tab: &RepoTab) -> bool {
+    tab.focus_head && !tab.head_only.is_empty()
 }
 
 /// The COMMIT GRAPH module: optional WIP row, virtualized commit rows, and
@@ -68,6 +81,33 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         if tab.history_done { "" } else { "+" }
     );
     module(ui, None, "COMMIT GRAPH", &readout, |ui| {
+        // Branch-focus strip: dims commits other branches also reach so the
+        // work unique to the current branch stands out.
+        ui.horizontal(|ui| {
+            let label = if focus_active(tab) {
+                format!("FOCUS · {}", tab.head.to_uppercase())
+            } else {
+                "ALL COMMITS".to_string()
+            };
+            let (rect, _) = ui.allocate_exact_size(
+                vec2((ui.available_width() - 110.0).max(40.0), 20.0),
+                Sense::hover(),
+            );
+            sub_label(ui, rect, &label);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let btn = HudButton::new(if tab.focus_head { "ALL" } else { "FOCUS" }).small(true);
+                let resp = ui
+                    .add_enabled(!tab.head_only.is_empty(), btn)
+                    .on_hover_text(
+                        "Dim commits that other branches also reach,\n\
+                     leaving only this branch's own work bright",
+                    );
+                if resp.clicked() {
+                    action = Some(Action::ToggleFocus);
+                }
+            });
+        });
+        ui.add_space(2.0);
         vscroll("graph").show_rows(ui, row_h, total, |ui, range| {
             let first = range.start;
             for i in range {
@@ -112,6 +152,7 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         Some(Action::CreateBranch(start_point, label)) => {
             tab.pending_branch = Some(NewBranch::new(start_point, label));
         }
+        Some(Action::ToggleFocus) => tab.focus_head = !tab.focus_head,
         None => {}
     }
 }
@@ -123,14 +164,17 @@ fn lane_x(left: f32, lane: u16) -> f32 {
 /// Draw one row's edge segments from its centerline (`y_top`) to the next
 /// row's. Stubs (last loaded row, parents not paged in yet) run half length
 /// and faded so the graph visibly continues off the bottom.
-fn draw_edges(p: &Painter, left: f32, y_top: f32, g: &Geom, edges: &[Edge], stub: bool) {
+fn draw_edges(p: &Painter, left: f32, y_top: f32, g: &Geom, edges: &[Edge], stub: bool, dim: bool) {
     let (y_bot, a) = if stub {
         (y_top + g.pitch * 0.5, 120)
     } else {
         (y_top + g.pitch, 255)
     };
     for e in edges {
-        let color = theme::alpha(LANES[e.color as usize % LANES.len()], a);
+        let mut color = theme::alpha(LANES[e.color as usize % LANES.len()], a);
+        if dim {
+            color = color.gamma_multiply(FOCUS_FADE);
+        }
         let x0 = lane_x(left, e.from.min(g.max_lane));
         let x1 = lane_x(left, e.to.min(g.max_lane));
         let stroke = Stroke::new(1.5_f32, color);
@@ -164,6 +208,19 @@ fn commit_row(
         return;
     }
 
+    // Branch focus: commits other branches also reach fade to background;
+    // this branch's own commits keep full brightness and a glowing node.
+    let focus = focus_active(tab);
+    let unique = tab.head_only.contains(&c.id);
+    let dim = focus && !unique;
+    let fade = |color: Color32| {
+        if dim {
+            color.gamma_multiply(FOCUS_FADE)
+        } else {
+            color
+        }
+    };
+
     let selected = matches!(&tab.selection, Some(DiffKey::Commit { id }) if *id == c.id);
     let p = ui.painter().with_clip_rect(rect);
     if selected {
@@ -180,7 +237,16 @@ fn commit_row(
     // back to no edges / lane 0.
     let up = ui.painter();
     if draw_prev && let Some(prev) = tab.graph.rows.get(ci - 1) {
-        draw_edges(up, rect.left(), y1 - g.pitch, g, &prev.edges, false);
+        let prev_dim = focus && !tab.head_only.contains(&tab.commits[ci - 1].id);
+        draw_edges(
+            up,
+            rect.left(),
+            y1 - g.pitch,
+            g,
+            &prev.edges,
+            false,
+            prev_dim,
+        );
     }
     let row = tab.graph.rows.get(ci);
     if let Some(row) = row {
@@ -191,6 +257,7 @@ fn commit_row(
             g,
             &row.edges,
             ci + 1 == tab.commits.len(),
+            dim,
         );
     }
 
@@ -198,7 +265,14 @@ fn commit_row(
     // ringed dot.
     let lane = row.map_or(0, |r| r.lane);
     let node = pos2(lane_x(rect.left(), lane.min(g.max_lane)), y1);
-    let color = LANES[lane as usize % LANES.len()];
+    let color = fade(LANES[lane as usize % LANES.len()]);
+    // Commits that exist only on this branch get a soft halo behind the
+    // node -- "this is the work in progress here".
+    if unique {
+        for (radius, a) in [(9.0, 16), (6.5, 32), (4.75, 52)] {
+            p.circle_filled(node, radius, theme::alpha(color, a));
+        }
+    }
     if c.is_merge {
         p.add(Shape::convex_polygon(
             vec![
@@ -233,12 +307,12 @@ fn commit_row(
         Align2::LEFT_CENTER,
         summary,
         body_font,
-        TEXT,
+        fade(TEXT),
     );
 
     let mut cx = sum_rect.right() + 8.0;
     for r in &c.refs {
-        let color = if r.contains('/') { PURPLE } else { AMBER };
+        let color = fade(if r.contains('/') { PURPLE } else { AMBER });
         let w = text_width(ui, r, &small_font) + 8.0;
         let chip = Rect::from_min_size(
             pos2(cx, y1 - g.small_h / 2.0 - 2.0),
@@ -263,7 +337,13 @@ fn commit_row(
 
     let meta = format!("{} · {} · {}", c.short, c.author, rel_time(c.time));
     let meta = truncate_right(ui, &meta, &small_font, rect.right() - 6.0 - text_x);
-    p.text(pos2(text_x, y2), Align2::LEFT_CENTER, meta, small_font, DIM);
+    p.text(
+        pos2(text_x, y2),
+        Align2::LEFT_CENTER,
+        meta,
+        small_font,
+        fade(DIM),
+    );
 
     // Selected rows get the glowing chamfered frame, the HUD "target lock".
     if selected {

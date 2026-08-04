@@ -80,6 +80,14 @@ pub struct RepoTab {
     pub commits: Vec<CommitInfo>,
     /// Lane layout for `commits`; recomputed whenever `commits` changes.
     pub graph: Graph,
+    /// Ids of commits that exist only on the current branch (reachable from
+    /// HEAD but from no other branch tip). Replaced with each first history
+    /// page; drives the graph's branch-focus dimming and node glow.
+    pub head_only: HashSet<String>,
+    /// Branch focus: dim graph commits that other branches also reach, so
+    /// the work unique to the current branch stands out. Toggled from the
+    /// COMMIT GRAPH header; a no-op while `head_only` is empty.
+    pub focus_head: bool,
     /// The last history page has been reached -- hides LOAD MORE.
     pub history_done: bool,
     /// What the center panel is bound to. Diff/conflict replies echo their
@@ -173,6 +181,8 @@ impl RepoTab {
             unstaged: Vec::new(),
             commits: Vec::new(),
             graph: Graph::default(),
+            head_only: HashSet::new(),
+            focus_head: true,
             history_done: true,
             selection: None,
             diff: None,
@@ -595,6 +605,7 @@ impl GitGudApp {
                     Ok(page) => {
                         if page.skip == 0 {
                             t.commits = page.commits;
+                            t.head_only = page.head_only.into_iter().collect();
                         } else {
                             t.commits.extend(page.commits);
                         }

@@ -17,6 +17,18 @@ An overlaying element obscuring the main view.
 
 Modal. Dialog. Window. 
 
+### Branch-only commits
+
+Commits reachable from HEAD but from no other branch tip — the work that exists only on the current branch. The current branch's own upstream does not count as "another branch": commits already pushed to it are still branch-only, since pushing doesn't change whose work it is. Computed by the worker per history load and rendered in the commit graph with a glowing node.
+
+#### Example
+
+After branching `feature` off `main` and making three commits, those three are branch-only. Once `feature` is merged back into `main` (or another branch is created at its tip), they stop being branch-only.
+
+### Branch focus
+
+The commit graph view mode that dims every commit that is not a branch-only commit, so the current branch's own work stands out against the shared history. Toggled from the COMMIT GRAPH header; inactive (a no-op) when there are no branch-only commits, since dimming the whole graph would read as a broken display.
+
 ### Uncommitted changes
 
 Any modification to files in the working directory that have not yet been saved to the repository's history with a commit. This includes staged and unstaged changes. This includes dirty submodules.

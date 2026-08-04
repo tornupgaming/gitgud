@@ -431,6 +431,12 @@ pub struct HistoryPage {
     pub commits: Vec<CommitInfo>,
     /// True when the walk hit the root commit -- hides the "load more" row.
     pub reached_end: bool,
+    /// Ids of commits reachable from HEAD but from no other branch tip
+    /// (the current branch's upstream excepted): the work that exists only
+    /// on the current branch. Drives the graph's branch-focus dimming and
+    /// node glow. Independent of paging, so only the first page
+    /// (`skip == 0`) carries it; later pages leave it empty.
+    pub head_only: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

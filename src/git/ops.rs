@@ -328,6 +328,7 @@ pub fn history(repo: &Repository, skip: usize, limit: usize) -> Result<HistoryPa
                 skip,
                 commits: Vec::new(),
                 reached_end: true,
+                head_only: Vec::new(),
             });
         }
         Err(e) => return Err(g(e)),
@@ -378,11 +379,58 @@ pub fn history(repo: &Repository, skip: usize, limit: usize) -> Result<HistoryPa
             parents: commit.parent_ids().map(|p| p.to_string()).collect(),
         });
     }
+    // Page-independent, so computed once for the first page rather than
+    // redundantly on every LOAD MORE.
+    let head_only = if skip == 0 {
+        head_only_ids(repo)?
+    } else {
+        Vec::new()
+    };
+
     Ok(HistoryPage {
         skip,
         commits,
         reached_end,
+        head_only,
     })
+}
+
+/// Commits reachable from HEAD but from no other branch tip: the work that
+/// exists only on the current branch. The branch's own upstream is not
+/// hidden, so pushed-but-unmerged commits still count as branch-only.
+fn head_only_ids(repo: &Repository) -> Result<Vec<String>, String> {
+    // A crafted repo could make the unique segment arbitrarily deep; stop
+    // collecting past this point (commits beyond it merely render dimmed).
+    const HEAD_ONLY_CAP: usize = 50_000;
+
+    let mut upstream = None;
+    if let Ok(head) = repo.head()
+        && let Ok(name) = head.shorthand()
+        && let Ok(branch) = repo.find_branch(name, BranchType::Local)
+        && let Ok(up) = branch.upstream()
+        && let Ok(Some(up_name)) = up.name()
+    {
+        upstream = Some(up_name.to_string());
+    }
+
+    let mut walk = repo.revwalk().map_err(g)?;
+    walk.push_head().map_err(g)?;
+    for entry in repo.branches(None).map_err(g)? {
+        let (branch, _) = entry.map_err(g)?;
+        let (Ok(Some(name)), Some(oid)) = (branch.name(), branch.get().target()) else {
+            continue;
+        };
+        if branch.is_head() || name.ends_with("/HEAD") || Some(name) == upstream.as_deref() {
+            continue;
+        }
+        walk.hide(oid).map_err(g)?;
+    }
+
+    let mut ids = Vec::new();
+    for oid in walk.take(HEAD_ONLY_CAP) {
+        ids.push(oid.map_err(g)?.to_string());
+    }
+    Ok(ids)
 }
 
 /// Mutable accumulator shared by the four `foreach` callbacks. Each closure
@@ -2089,6 +2137,76 @@ mod tests {
         let sig = repo.signature().unwrap();
         repo.commit(Some(refname), &sig, &sig, "theirs", &tree, &[parent])
             .unwrap()
+    }
+
+    #[test]
+    fn head_only_marks_commits_unique_to_the_branch() {
+        let (dir, repo) = temp_repo("head_only");
+        fs::write(dir.join("f.txt"), "base\n").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "base").unwrap();
+        let base = repo.head().unwrap().target().unwrap();
+
+        // No other branches: every commit is unique to HEAD.
+        let page = history(&repo, 0, 10).unwrap();
+        assert_eq!(page.head_only, vec![base.to_string()]);
+
+        // A side branch reaches base; the two newer HEAD commits are the
+        // branch's own work.
+        {
+            let base_commit = repo.find_commit(base).unwrap();
+            commit_on_ref(&repo, "refs/heads/other", &base_commit, Some("side\n"));
+        }
+        fs::write(dir.join("f.txt"), "one\n").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "one").unwrap();
+        fs::write(dir.join("f.txt"), "two\n").unwrap();
+        stage(&repo, None).unwrap();
+        commit(&repo, "two").unwrap();
+
+        let page = history(&repo, 0, 10).unwrap();
+        assert_eq!(page.commits.len(), 3);
+        assert_eq!(page.head_only.len(), 2);
+        assert!(!page.head_only.contains(&base.to_string()));
+        assert!(page.head_only.contains(&page.commits[0].id));
+        assert!(page.head_only.contains(&page.commits[1].id));
+
+        // Later pages skip the (page-independent) computation.
+        assert!(history(&repo, 1, 10).unwrap().head_only.is_empty());
+
+        // The branch's own upstream pointing at the tip must not swallow the
+        // unique commits -- pushed work is still this branch's work.
+        let (name, tip) = {
+            let head = repo.head().unwrap();
+            (
+                head.shorthand().unwrap().to_string(),
+                head.target().unwrap(),
+            )
+        };
+        repo.remote("origin", "https://example.invalid/r.git")
+            .unwrap();
+        repo.reference(
+            &format!("refs/remotes/origin/{name}"),
+            tip,
+            true,
+            "test upstream",
+        )
+        .unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str(&format!("branch.{name}.remote"), "origin")
+            .unwrap();
+        cfg.set_str(
+            &format!("branch.{name}.merge"),
+            &format!("refs/heads/{name}"),
+        )
+        .unwrap();
+
+        let page = history(&repo, 0, 10).unwrap();
+        assert_eq!(
+            page.head_only.len(),
+            2,
+            "upstream tip must not hide HEAD's work"
+        );
     }
 
     /// Base commit, divergent edits on HEAD (ours) and refs/heads/other
