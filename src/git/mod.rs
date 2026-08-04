@@ -129,6 +129,13 @@ pub enum Job {
     Push {
         id: RepoId,
     },
+    /// Adds `url` as the `origin` remote, then pushes — the confirm action of
+    /// the no-origin dialog armed by [`Update::NoOrigin`]. Network op, runs on
+    /// its own thread like push.
+    AddOrigin {
+        id: RepoId,
+        url: String,
+    },
     /// Pulls the current branch from its upstream via the CLI on its own
     /// thread. Fast-forwards when it cleanly can; on divergence replies
     /// [`Update::Diverged`] so the user chooses merge vs rebase rather than
@@ -202,6 +209,10 @@ pub enum Update {
         /// Commits the local branch has that the upstream lacks.
         ahead: usize,
     },
+    /// A push found no `origin` remote configured: there is nowhere to push
+    /// until one exists. The UI prompts for a URL, then sends
+    /// [`Job::AddOrigin`] — the app never invents a remote on its own.
+    NoOrigin { id: RepoId },
     /// A mid-flight progress report from a long-running network op, streamed
     /// from the worker's network thread *before* the terminal [`Update::Acted`]
     /// (or [`Update::Diverged`]). Several arrive per op; they drive the progress

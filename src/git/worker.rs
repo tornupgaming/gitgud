@@ -266,6 +266,26 @@ fn run_job(
             });
             None
         }
+        Job::AddOrigin { id, url } => {
+            // The confirm action of the no-origin dialog: it ends in a push,
+            // so it gets the same off-thread treatment (and PUSH label).
+            let (_, workdir) = repos.get(&id)?;
+            let workdir = workdir.clone();
+            let tx = upd_tx.clone();
+            let ctx = egui_ctx.clone();
+            std::thread::spawn(move || {
+                let mut report = reporter(&tx, &ctx, id, "PUSH");
+                let result = ops::add_origin_and_push(&workdir, &url, &mut report);
+                drop(report);
+                let _ = tx.send(Update::Acted {
+                    id,
+                    kind: ActionKind::Push,
+                    result,
+                });
+                ctx.request_repaint();
+            });
+            None
+        }
         Job::Pull { id } => {
             // Network, same off-thread treatment as fetch and push.
             let (_, workdir) = repos.get(&id)?;
@@ -367,5 +387,8 @@ fn sync_update(id: RepoId, kind: SyncKind, outcome: ops::SyncOutcome) -> Update 
             behind,
             ahead,
         },
+        // Only the push probe reports this; pull without an upstream errors
+        // before any remote lookup.
+        ops::SyncOutcome::NoOrigin => Update::NoOrigin { id },
     }
 }

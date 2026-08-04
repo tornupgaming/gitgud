@@ -132,6 +132,9 @@ pub struct RepoTab {
     /// the reconcile dialog (merge / rebase / cancel). The job only fires on
     /// the user's choice -- the app never picks a strategy on its own.
     pub pending_sync: Option<PendingSync>,
+    /// Set when a push found no `origin` remote; drives the add-origin dialog
+    /// (URL prompt, then [`Job::AddOrigin`] on confirm).
+    pub pending_remote: Option<PendingRemote>,
     /// Repo-relative path of a submodule the user asked to open as its own tab;
     /// drained after layout (it needs `&mut self`, not the borrowed tab).
     pub pending_open_submodule: Option<String>,
@@ -198,6 +201,7 @@ impl RepoTab {
             pending_discard: None,
             pending_branch: None,
             pending_sync: None,
+            pending_remote: None,
             pending_open_submodule: None,
             in_flight: 0,
             log: None,
@@ -295,6 +299,15 @@ impl OpProgress {
             }
         }
     }
+}
+
+/// A push that found no `origin` remote, held while the add-origin dialog is
+/// up. Carries the URL being typed; the job only fires on confirm -- the app
+/// never invents a remote on its own.
+pub struct PendingRemote {
+    pub url: String,
+    /// Set when the dialog opens so the URL field grabs focus once.
+    pub needs_focus: bool,
 }
 
 /// A diverged push/pull awaiting the user's reconcile choice. Carries which
@@ -753,6 +766,14 @@ impl GitGudApp {
                     ahead,
                 });
             }
+            Update::NoOrigin { .. } => {
+                // The push probe found nowhere to push: arm the add-origin
+                // dialog. The follow-up AddOrigin fires from there.
+                self.tabs[idx].pending_remote = Some(PendingRemote {
+                    url: String::new(),
+                    needs_focus: true,
+                });
+            }
             // Folded into the matching op above, then returned early.
             Update::Progress { .. } => unreachable!("Progress is handled before this match"),
         }
@@ -778,6 +799,7 @@ fn job_id(job: &Job) -> RepoId {
         | Job::ResolveConflict { id, .. }
         | Job::Fetch { id }
         | Job::Push { id }
+        | Job::AddOrigin { id, .. }
         | Job::Pull { id }
         | Job::Integrate { id, .. }
         | Job::UpdateSubmodules { id, .. } => *id,
@@ -790,7 +812,7 @@ fn job_id(job: &Job) -> RepoId {
 fn net_label(job: &Job) -> Option<&'static str> {
     match job {
         Job::Fetch { .. } => Some("FETCH"),
-        Job::Push { .. } => Some("PUSH"),
+        Job::Push { .. } | Job::AddOrigin { .. } => Some("PUSH"),
         Job::Pull { .. } => Some("PULL"),
         Job::Integrate { push_after, .. } => Some(if *push_after { "PUSH" } else { "PULL" }),
         Job::UpdateSubmodules { .. } => Some("SUBMODULES"),
@@ -830,6 +852,9 @@ fn net_done_op(upd: &Update) -> Option<&'static str> {
             SyncKind::Push => "PUSH",
             SyncKind::Pull => "PULL",
         }),
+        // Hands the flow off to the add-origin dialog, ending the op the same
+        // way a divergence does.
+        Update::NoOrigin { .. } => Some("PUSH"),
         _ => None,
     }
 }
@@ -843,6 +868,7 @@ fn update_id(upd: &Update) -> RepoId {
         | Update::Conflict { id, .. }
         | Update::Acted { id, .. }
         | Update::Diverged { id, .. }
+        | Update::NoOrigin { id }
         | Update::Progress { id, .. } => *id,
     }
 }
@@ -962,6 +988,7 @@ impl eframe::App for GitGudApp {
                 && t.pending_discard.is_none()
                 && t.pending_branch.is_none()
                 && t.pending_sync.is_none()
+                && t.pending_remote.is_none()
                 && t.net_ops.is_empty()
                 && !t.pending_abort_merge
             {
@@ -1077,6 +1104,7 @@ impl eframe::App for GitGudApp {
         // console once a probe reports divergence.
         if let Some(t) = self.tabs.get_mut(self.active) {
             ui::sync::show(ui, t, &mut jobs);
+            ui::sync::show_no_origin(ui, t, &mut jobs);
         }
 
         // Progress modal for an in-flight network op (fetch/push/pull/

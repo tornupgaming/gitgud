@@ -1342,7 +1342,13 @@ fn sub_step_key(path: &str) -> String {
 /// other lacks and only the user can pick how to reconcile.
 pub enum SyncOutcome {
     Completed(Result<String, String>),
-    Diverged { behind: usize, ahead: usize },
+    Diverged {
+        behind: usize,
+        ahead: usize,
+    },
+    /// The repo has no `origin` remote, so there is nowhere to push. Only the
+    /// user knows the URL -- the UI offers to add one.
+    NoOrigin,
 }
 
 /// Pushes the current branch to origin via the CLI. Network op, same
@@ -1353,6 +1359,12 @@ pub enum SyncOutcome {
 /// [`SyncOutcome::Diverged`] for the UI to resolve, while a fast-forwardable
 /// branch just pushes.
 pub fn push(workdir: &Path, report: Reporter<'_>) -> SyncOutcome {
+    // No origin at all: pushing is impossible until one exists. Report it as
+    // its own outcome so the UI can offer to add a remote, instead of passing
+    // git's "'origin' does not appear to be a git repository" to the status bar.
+    if !has_origin(workdir) {
+        return SyncOutcome::NoOrigin;
+    }
     // A brand-new branch has no upstream to diverge from -- push and let -u
     // record the tracking ref.
     if !has_upstream(workdir) {
@@ -1640,6 +1652,31 @@ fn do_push(workdir: &Path, report: Reporter<'_>) -> Result<String, String> {
     }
 }
 
+/// Adds `url` as the `origin` remote, then pushes HEAD to it — the follow-up
+/// to a [`SyncOutcome::NoOrigin`] reply once the user has supplied a URL.
+/// Network op, same throwaway-thread treatment as [`fetch`].
+pub fn add_origin_and_push(
+    workdir: &Path,
+    url: &str,
+    report: Reporter<'_>,
+) -> Result<String, String> {
+    let url = url.trim();
+    // The URL is user-typed, not repo-controlled, but the same argument
+    // hygiene applies: a leading `-` would read as an option to `remote add`.
+    if url.is_empty() || url.starts_with('-') {
+        return Err(format!("invalid remote URL: {url:?}"));
+    }
+    run_step(
+        workdir,
+        &["remote", "add", "origin", url],
+        "git remote add failed",
+        "remote",
+        "ADD REMOTE — origin",
+        report,
+    )?;
+    do_push(workdir, report)
+}
+
 /// True when `line` looks like git's own `push` output rather than a pre-push
 /// hook's. Used to split hook chatter (which always precedes git's transfer)
 /// from the push proper. Heuristic by nature -- a worst-case misclassification
@@ -1701,6 +1738,15 @@ fn divergence(workdir: &Path) -> Result<(usize, usize), String> {
     let behind = nums.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let ahead = nums.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     Ok((behind, ahead))
+}
+
+/// True when the repo has an `origin` remote configured. The push flow (and
+/// the upstream bookkeeping around it) hardcodes `origin`, so its absence
+/// means "nowhere to push", not a git error.
+fn has_origin(workdir: &Path) -> bool {
+    git_output(workdir, &["remote", "get-url", "origin"])
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// True when the current branch tracks an upstream ref — i.e. it has been
