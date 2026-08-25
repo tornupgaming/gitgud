@@ -13,6 +13,7 @@ pub mod sync;
 mod tree;
 pub mod widgets;
 pub mod worktree;
+pub mod worktrees;
 
 pub(crate) use reveal::{factor, hud_menu, hud_modal};
 pub use shell::{TopBarAction, empty_state, status_bar, top_bar};

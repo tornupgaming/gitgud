@@ -321,6 +321,46 @@ fn run_job(
             });
             None
         }
+        Job::WorktreeAdd {
+            id,
+            path,
+            branch,
+            create_branch,
+        } => {
+            let (_, workdir) = repos.get(&id)?;
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::WorktreeAdd,
+                result: ops::worktree_add(workdir, &path, &branch, create_branch),
+            })
+        }
+        Job::WorktreeRemove { id, path, force } => {
+            let (_, workdir) = repos.get(&id)?;
+            Some(match ops::worktree_remove(workdir, &path, force) {
+                // git refused an unforced remove because the worktree is
+                // dirty: a decision for the user, so it arms the escalated
+                // confirm instead of landing as an error.
+                Ok(ops::WorktreeRemoveOutcome::Dirty) => Update::WorktreeDirty { id, path },
+                Ok(ops::WorktreeRemoveOutcome::Done(msg)) => Update::Acted {
+                    id,
+                    kind: ActionKind::WorktreeRemove,
+                    result: Ok(msg),
+                },
+                Err(e) => Update::Acted {
+                    id,
+                    kind: ActionKind::WorktreeRemove,
+                    result: Err(e),
+                },
+            })
+        }
+        Job::WorktreePrune { id } => {
+            let (_, workdir) = repos.get(&id)?;
+            Some(Update::Acted {
+                id,
+                kind: ActionKind::WorktreePrune,
+                result: ops::worktree_prune(workdir),
+            })
+        }
         Job::Integrate {
             id,
             strategy,

@@ -15,8 +15,17 @@ use crate::theme::{self, ACCENT, AMBER, BG3, DIM, GREEN, PURPLE, RED, TEXT};
 /// and a click on a folder row toggles its collapsed state.
 enum BranchAction {
     Checkout(String),
-    Merge { branch: String, is_remote: bool },
-    CreateFrom { start_point: String, label: String },
+    Merge {
+        branch: String,
+        is_remote: bool,
+    },
+    CreateFrom {
+        start_point: String,
+        label: String,
+    },
+    /// Check the branch out into a new worktree (the Worktree Add Flow) --
+    /// the birthplace of a repository's first linked worktree.
+    NewWorktree(String),
     ToggleFolder(String),
 }
 
@@ -81,6 +90,9 @@ fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         }
         Some(BranchAction::CreateFrom { start_point, label }) => {
             tab.pending_branch = Some(NewBranch::new(start_point, label));
+        }
+        Some(BranchAction::NewWorktree(branch)) => {
+            super::worktrees::arm_add(tab, branch);
         }
         Some(BranchAction::ToggleFolder(path)) => {
             // Absent = expanded, so toggling is remove-or-insert.
@@ -535,6 +547,17 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
                             branch: b.name.clone(),
                             is_remote: b.is_remote,
                         });
+                        ui.close();
+                    }
+                    // A branch can be checked out in one worktree at a time,
+                    // so the entry only shows for local branches no worktree
+                    // holds (HEAD included -- its branch is in the list).
+                    if !b.is_remote
+                        && !b.is_head
+                        && super::worktrees::branch_is_free(tab, &b.name)
+                        && ui.button("Open in new worktree…").clicked()
+                    {
+                        action = Some(BranchAction::NewWorktree(b.name.clone()));
                         ui.close();
                     }
                 });

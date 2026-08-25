@@ -159,6 +159,31 @@ pub enum Job {
         path: Option<String>,
         init: bool,
     },
+    /// `git worktree add`: create a linked worktree at `path` checking out
+    /// `branch` -- with `create_branch`, a new branch of that name off HEAD.
+    /// Local CLI op; the UI opens the new worktree as its own tab on success
+    /// (see ADR 0001: a worktree is a tab).
+    WorktreeAdd {
+        id: RepoId,
+        path: PathBuf,
+        branch: String,
+        create_branch: bool,
+    },
+    /// `git worktree remove`: delete a linked worktree's directory and its
+    /// bookkeeping; the branch it had checked out is kept. Without `force` a
+    /// worktree with uncommitted changes replies [`Update::WorktreeDirty`]
+    /// instead of acting, so the UI can escalate to Discard & remove -- the
+    /// app never force-removes on its own.
+    WorktreeRemove {
+        id: RepoId,
+        path: PathBuf,
+        force: bool,
+    },
+    /// `git worktree prune`: drop the records of stale worktrees (listed by
+    /// git but whose directories no longer exist on disk).
+    WorktreePrune {
+        id: RepoId,
+    },
 }
 
 /// A reply from the worker. `Result<_, String>` is Rust's standard
@@ -213,6 +238,10 @@ pub enum Update {
     /// until one exists. The UI prompts for a URL, then sends
     /// [`Job::AddOrigin`] — the app never invents a remote on its own.
     NoOrigin { id: RepoId },
+    /// An unforced [`Job::WorktreeRemove`] found the worktree dirty
+    /// (uncommitted changes). Terminal reply: the UI escalates its confirm
+    /// modal to Discard & remove, which re-sends the job with `force`.
+    WorktreeDirty { id: RepoId, path: PathBuf },
     /// A mid-flight progress report from a long-running network op, streamed
     /// from the worker's network thread *before* the terminal [`Update::Acted`]
     /// (or [`Update::Diverged`]). Several arrive per op; they drive the progress
@@ -326,6 +355,9 @@ pub enum ActionKind {
     Push,
     Pull,
     UpdateSubmodules,
+    WorktreeAdd,
+    WorktreeRemove,
+    WorktreePrune,
 }
 
 #[derive(Debug, Clone)]
@@ -354,6 +386,27 @@ pub struct RefreshData {
     /// Submodules registered in the repo, for the sidebar panel. Empty for
     /// repos without submodules (the panel then hides itself).
     pub submodules: Vec<SubmoduleInfo>,
+    /// Every worktree of this repository (main first, then linked), for the
+    /// worktree bar. The bar hides itself while there is only the main one.
+    /// Empty when listing fails (e.g. no git CLI) -- the feature just hides.
+    pub worktrees: Vec<WorktreeInfo>,
+}
+
+/// One worktree of a repository, parsed from `git worktree list --porcelain`.
+/// The UI treats the entry whose `path` matches the tab's own as "where I am".
+#[derive(Debug, Clone)]
+pub struct WorktreeInfo {
+    /// Absolute path of the worktree's root directory.
+    pub path: PathBuf,
+    /// Checked-out branch name, or the short commit id when detached.
+    pub branch: String,
+    pub detached: bool,
+    /// The original checkout (always listed first by git; never removable).
+    pub is_main: bool,
+    /// Stale: git still lists it but its directory is gone from disk. The bar
+    /// offers PRUNE instead of jump for these.
+    pub stale: bool,
+    pub locked: bool,
 }
 
 /// One submodule's state for the SUBMODULES panel. Pointer changes (the parent

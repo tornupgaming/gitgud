@@ -19,7 +19,7 @@ use notify::Watcher;
 use crate::git::worker::GitWorker;
 use crate::git::{
     ActionKind, BranchInfo, ChangeKind, CommitInfo, DiffData, DiffKey, FileChange, Job, MergeInfo,
-    ProgressEvent, RepoId, StepState, SubmoduleInfo, SyncKind, Update, graph::Graph,
+    ProgressEvent, RepoId, StepState, SubmoduleInfo, SyncKind, Update, WorktreeInfo, graph::Graph,
 };
 use crate::theme::{self, ACCENT, BG1};
 use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
@@ -51,6 +51,48 @@ impl NewBranch {
     }
 }
 
+/// A worktree-add awaiting the modal's confirm (the Worktree Add Flow).
+/// Armed by the sidebar's "Open in new worktree…" (branch fixed) or the bar's
+/// ADD button (branch typed). The job only fires on confirm.
+pub struct NewWorktree {
+    /// Branch fixed by the sidebar entry; `None` means the modal's branch
+    /// field decides (an existing local branch checks out, a new name creates).
+    pub fixed_branch: Option<String>,
+    /// In-progress branch text when not fixed.
+    pub branch: String,
+    /// Editable destination path; re-derived from the branch until edited.
+    pub path: String,
+    /// The user touched the path field -- stop re-deriving the suggestion.
+    pub path_edited: bool,
+    /// Set when the dialog opens so the first field grabs focus once.
+    pub needs_focus: bool,
+    /// BROWSE folder picker in flight (rfd blocks, so it runs on a thread);
+    /// resolves to the new parent directory for the destination.
+    pub picker: Option<Receiver<Option<PathBuf>>>,
+}
+
+impl NewWorktree {
+    pub fn new(fixed_branch: Option<String>) -> Self {
+        Self {
+            fixed_branch,
+            branch: String::new(),
+            path: String::new(),
+            path_edited: false,
+            needs_focus: true,
+            picker: None,
+        }
+    }
+}
+
+/// A worktree removal awaiting confirmation (the Worktree Remove Flow).
+/// `dirty` escalates the modal to Discard & remove after git refused the
+/// unforced attempt ([`Update::WorktreeDirty`]).
+#[derive(Clone)]
+pub struct PendingWorktreeRemove {
+    pub path: PathBuf,
+    pub dirty: bool,
+}
+
 /// UI-side state for one open repository: the worker's latest snapshots plus
 /// view state (selection, armed confirmations, in-flight accounting). The
 /// worker owns the matching `Repository`; this holds only plain data.
@@ -75,6 +117,10 @@ pub struct RepoTab {
     pub collapsed_file_folders: HashSet<String>,
     /// Submodules for the SUBMODULES panel; empty hides it.
     pub submodules: Vec<SubmoduleInfo>,
+    /// Worktrees of this repository, main first (see ADR 0001: a worktree is
+    /// a tab). Drives the worktree bar, which hides while only the main
+    /// worktree exists.
+    pub worktrees: Vec<WorktreeInfo>,
     pub staged: Vec<FileChange>,
     pub unstaged: Vec<FileChange>,
     pub commits: Vec<CommitInfo>,
@@ -138,6 +184,16 @@ pub struct RepoTab {
     /// Repo-relative path of a submodule the user asked to open as its own tab;
     /// drained after layout (it needs `&mut self`, not the borrowed tab).
     pub pending_open_submodule: Option<String>,
+    /// Worktree-add modal state; `Some` shows the Worktree Add Flow modal.
+    pub pending_worktree_add: Option<NewWorktree>,
+    /// Worktree removal awaiting confirmation; the job only fires on confirm.
+    pub pending_worktree_remove: Option<PendingWorktreeRemove>,
+    /// Confirmed removal `(path, force)` to dispatch after layout: the
+    /// target's tab (if open) must be closed first so the worker drops its
+    /// repo handle before the delete, and that needs `&mut self`.
+    pub worktree_remove_go: Option<(PathBuf, bool)>,
+    /// Destination of a worktree-add in flight; on success it opens as a tab.
+    pub opening_worktree: Option<PathBuf>,
     /// Jobs sent but not yet answered; > 0 shows the busy indicators.
     pub in_flight: usize,
     /// Last action outcome for the status bar: (is_error, message).
@@ -180,6 +236,7 @@ impl RepoTab {
             tree_view: true,
             collapsed_file_folders: HashSet::new(),
             submodules: Vec::new(),
+            worktrees: Vec::new(),
             staged: Vec::new(),
             unstaged: Vec::new(),
             commits: Vec::new(),
@@ -203,6 +260,10 @@ impl RepoTab {
             pending_sync: None,
             pending_remote: None,
             pending_open_submodule: None,
+            pending_worktree_add: None,
+            pending_worktree_remove: None,
+            worktree_remove_go: None,
+            opening_worktree: None,
             in_flight: 0,
             log: None,
             loaded: false,
@@ -419,6 +480,16 @@ impl GitGudApp {
         }
     }
 
+    /// Focus the tab already open at `path`, or open one. The worktree bar's
+    /// jump action -- a worktree is a tab (ADR 0001).
+    fn focus_or_open(&mut self, path: PathBuf) {
+        if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
+            self.active = i;
+        } else {
+            self.open_repo(path);
+        }
+    }
+
     /// Single send path so in-flight accounting can't be forgotten.
     fn send(&mut self, job: Job) {
         if !matches!(job, Job::Close { .. }) {
@@ -593,6 +664,7 @@ impl GitGudApp {
                         t.head_detached = d.head_detached;
                         t.branches = d.branches;
                         t.submodules = d.submodules;
+                        t.worktrees = d.worktrees;
                         t.staged = d.staged;
                         t.unstaged = d.unstaged;
                         // Entering a merge: seed the commit box with git's
@@ -694,11 +766,18 @@ impl GitGudApp {
             }
             Update::Acted { kind, result, .. } => {
                 // Scoped block: end the tab borrow before calling self.send.
-                let (ok, restore) = {
+                let (ok, restore, opened) = {
                     let t = &mut self.tabs[idx];
                     if kind == ActionKind::Commit {
                         t.committing = false;
                     }
+                    // Taken win or lose, so a failed add can't leave a stale
+                    // destination that a later add would then auto-open.
+                    let opened = if kind == ActionKind::WorktreeAdd {
+                        t.opening_worktree.take()
+                    } else {
+                        None
+                    };
                     match result {
                         Ok(msg) => {
                             t.log = Some((false, msg));
@@ -711,17 +790,17 @@ impl GitGudApp {
                             }
                             // An into-selected merge that was aborted lands on
                             // the selected branch; restore the original branch
-                            // (the worktree is clean after an abort).
+                            // (the working tree is clean after an abort).
                             let restore = if kind == ActionKind::AbortMerge {
                                 t.merge_return.take()
                             } else {
                                 None
                             };
-                            (true, restore)
+                            (true, restore, opened)
                         }
                         Err(e) => {
                             t.log = Some((true, e));
-                            (false, None)
+                            (false, None, None)
                         }
                     }
                 };
@@ -737,6 +816,7 @@ impl GitGudApp {
                     // Push moves the remote-tracking ref, so history decorations
                     // and ahead/behind counts both need recomputing. A clean
                     // merge creates a commit; an abort moves HEAD's state back.
+                    // A worktree add can create a branch, moving refs too.
                     if matches!(
                         kind,
                         ActionKind::Commit
@@ -747,8 +827,39 @@ impl GitGudApp {
                             | ActionKind::Fetch
                             | ActionKind::Push
                             | ActionKind::Pull
+                            | ActionKind::WorktreeAdd
                     ) {
                         self.send(Job::LoadHistory { id, skip: 0 });
+                    }
+                    // A worktree op changed the family every sibling tab lists
+                    // in its bar; their watchers can't see it (a linked
+                    // worktree's `.git` is a file pointing elsewhere), so
+                    // refresh them explicitly.
+                    if matches!(
+                        kind,
+                        ActionKind::WorktreeAdd
+                            | ActionKind::WorktreeRemove
+                            | ActionKind::WorktreePrune
+                    ) {
+                        let family: Vec<PathBuf> = self.tabs[idx]
+                            .worktrees
+                            .iter()
+                            .map(|w| w.path.clone())
+                            .collect();
+                        let siblings: Vec<RepoId> = self
+                            .tabs
+                            .iter()
+                            .filter(|t| t.id != id && t.loaded && family.contains(&t.path))
+                            .map(|t| t.id)
+                            .collect();
+                        for sid in siblings {
+                            self.send(Job::Refresh { id: sid });
+                        }
+                    }
+                    // A worktree is a tab (ADR 0001): entering the one just
+                    // created means opening-and-focusing it.
+                    if let Some(path) = opened {
+                        self.open_repo(path);
                     }
                 }
             }
@@ -773,6 +884,13 @@ impl GitGudApp {
                     url: String::new(),
                     needs_focus: true,
                 });
+            }
+            Update::WorktreeDirty { path, .. } => {
+                // The unforced remove found uncommitted changes: escalate the
+                // confirm modal to Discard & remove. The forced job only fires
+                // on the user's say-so -- the app never force-removes alone.
+                self.tabs[idx].pending_worktree_remove =
+                    Some(PendingWorktreeRemove { path, dirty: true });
             }
             // Folded into the matching op above, then returned early.
             Update::Progress { .. } => unreachable!("Progress is handled before this match"),
@@ -802,7 +920,10 @@ fn job_id(job: &Job) -> RepoId {
         | Job::AddOrigin { id, .. }
         | Job::Pull { id }
         | Job::Integrate { id, .. }
-        | Job::UpdateSubmodules { id, .. } => *id,
+        | Job::UpdateSubmodules { id, .. }
+        | Job::WorktreeAdd { id, .. }
+        | Job::WorktreeRemove { id, .. }
+        | Job::WorktreePrune { id } => *id,
     }
 }
 
@@ -869,6 +990,7 @@ fn update_id(upd: &Update) -> RepoId {
         | Update::Acted { id, .. }
         | Update::Diverged { id, .. }
         | Update::NoOrigin { id }
+        | Update::WorktreeDirty { id, .. }
         | Update::Progress { id, .. } => *id,
     }
 }
@@ -989,6 +1111,8 @@ impl eframe::App for GitGudApp {
                 && t.pending_branch.is_none()
                 && t.pending_sync.is_none()
                 && t.pending_remote.is_none()
+                && t.pending_worktree_add.is_none()
+                && t.pending_worktree_remove.is_none()
                 && t.net_ops.is_empty()
                 && !t.pending_abort_merge
             {
@@ -1027,6 +1151,40 @@ impl eframe::App for GitGudApp {
             Some(TopBarAction::Pull) => {
                 if let Some(t) = self.tabs.get(self.active) {
                     jobs.push(Job::Pull { id: t.id });
+                }
+            }
+            None => {}
+        }
+
+        // Worktree bar: a subheader strip under the command deck, shown only
+        // when the repo has linked worktrees (main alone means no bar -- the
+        // common single-worktree repo pays no vertical cost).
+        let wt_action = match self.tabs.get(self.active) {
+            Some(t) if t.loaded && t.worktrees.len() > 1 => {
+                Panel::top("worktreebar")
+                    .exact_size(34.0)
+                    .frame(Frame::new().inner_margin(Margin::symmetric(10, 3)))
+                    .show_inside(ui, |ui| ui::worktrees::bar(ui, t))
+                    .inner
+            }
+            _ => None,
+        };
+        match wt_action {
+            // A worktree is a tab (ADR 0001): jumping opens-or-focuses it.
+            Some(ui::worktrees::BarAction::Jump(path)) => self.focus_or_open(path),
+            Some(ui::worktrees::BarAction::Add) => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.pending_worktree_add = Some(NewWorktree::new(None));
+                }
+            }
+            Some(ui::worktrees::BarAction::Remove(path)) => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.pending_worktree_remove = Some(PendingWorktreeRemove { path, dirty: false });
+                }
+            }
+            Some(ui::worktrees::BarAction::Prune) => {
+                if let Some(t) = self.tabs.get(self.active) {
+                    jobs.push(Job::WorktreePrune { id: t.id });
                 }
             }
             None => {}
@@ -1105,6 +1263,7 @@ impl eframe::App for GitGudApp {
         if let Some(t) = self.tabs.get_mut(self.active) {
             ui::sync::show(ui, t, &mut jobs);
             ui::sync::show_no_origin(ui, t, &mut jobs);
+            ui::worktrees::modals(ui, t, &mut jobs);
         }
 
         // Progress modal for an in-flight network op (fetch/push/pull/
@@ -1140,6 +1299,30 @@ impl eframe::App for GitGudApp {
         if let Some(rel) = open {
             let abs = self.tabs[self.active].path.join(rel);
             self.open_repo(abs);
+        }
+
+        // A confirmed worktree removal, armed by the modal. Runs here because
+        // the target's tab (if open) must be closed first -- queued on the same
+        // channel, the Close precedes the remove, so the worker drops its repo
+        // handle before git deletes the directory (open handles would block
+        // the delete on Windows).
+        let go = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|t| t.worktree_remove_go.take());
+        if let Some((path, force)) = go {
+            let id = self.tabs[self.active].id;
+            if let Some(i) = self.tabs.iter().position(|t| t.path == path) {
+                let closing = self.tabs.remove(i);
+                self.worker.send(Job::Close { id: closing.id });
+                if i < self.active {
+                    self.active -= 1;
+                } else {
+                    self.clamp_active();
+                }
+                self.save_repo_list();
+            }
+            self.send(Job::WorktreeRemove { id, path, force });
         }
     }
 }

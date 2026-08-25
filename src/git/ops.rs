@@ -22,7 +22,7 @@ use git2::{
 use super::{
     BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey, DiffLine,
     FileChange, FileDiff, HistoryPage, LineKind, MergeDirection, MergeInfo, ProgressEvent,
-    RefreshData, RepoMeta, Resolution, StepState, SubmoduleInfo, SyncStrategy,
+    RefreshData, RepoMeta, Resolution, StepState, SubmoduleInfo, SyncStrategy, WorktreeInfo,
 };
 
 /// A sink for live progress from a long-running op. The worker hands each
@@ -205,6 +205,10 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
         MergeInfo { head_short, msg }
     });
 
+    // Worktree membership rides on the same snapshot. A listing failure (no
+    // git CLI on PATH) degrades to empty -- the bar hides, nothing else breaks.
+    let worktrees = repo.workdir().map(worktree_list).unwrap_or_default();
+
     Ok(RefreshData {
         head,
         head_detached,
@@ -213,7 +217,158 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
         unstaged,
         merging,
         submodules,
+        worktrees,
     })
+}
+
+/// All worktrees of the repository enclosing `workdir`, main first (git
+/// guarantees that ordering). Errors degrade to an empty list -- worktree
+/// support then simply hides rather than failing the whole refresh.
+fn worktree_list(workdir: &Path) -> Vec<WorktreeInfo> {
+    run_git(workdir, &["worktree", "list", "--porcelain"], "")
+        .map(|(stdout, _)| parse_worktrees(&stdout))
+        .unwrap_or_default()
+}
+
+/// Parses `git worktree list --porcelain` output: blank-line-separated blocks
+/// of `worktree <path>` / `HEAD <oid>` / `branch refs/heads/<name>` plus the
+/// flag lines `detached`, `bare`, `locked [why]`, `prunable [why]`. The first
+/// block is always the main worktree. Bare entries are skipped (the app
+/// rejects bare repos, and a bare "worktree" has no directory to stand in).
+fn parse_worktrees(porcelain: &str) -> Vec<WorktreeInfo> {
+    let mut out = Vec::new();
+    let mut first = true;
+    for block in porcelain.split("\n\n") {
+        let mut path: Option<&str> = None;
+        let mut head_short = String::new();
+        let mut branch: Option<&str> = None;
+        let (mut detached, mut bare, mut locked, mut stale) = (false, false, false, false);
+        for line in block.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                path = Some(p);
+            } else if let Some(oid) = line.strip_prefix("HEAD ") {
+                head_short = oid.chars().take(7).collect();
+            } else if let Some(r) = line.strip_prefix("branch ") {
+                branch = Some(r.strip_prefix("refs/heads/").unwrap_or(r));
+            } else if line == "detached" {
+                detached = true;
+            } else if line == "bare" {
+                bare = true;
+            } else if line == "locked" || line.starts_with("locked ") {
+                locked = true;
+            } else if line == "prunable" || line.starts_with("prunable ") {
+                stale = true;
+            }
+        }
+        let Some(path) = path else { continue };
+        let is_main = first;
+        first = false;
+        if bare {
+            continue;
+        }
+        out.push(WorktreeInfo {
+            path: std::path::PathBuf::from(path),
+            branch: branch.map(str::to_string).unwrap_or(head_short),
+            detached,
+            is_main,
+            stale,
+            locked,
+        });
+    }
+    out
+}
+
+/// Rejects arguments that could read as a CLI flag before they reach
+/// `git worktree`. Branch names and worktree paths both come from user input
+/// (typed or picked), so the leading-`-` rejection the checkout path applies
+/// holds here too.
+fn worktree_arg<'a>(arg: &'a str, what: &str) -> Result<&'a str, String> {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return Err(format!("{what} is empty"));
+    }
+    if arg.starts_with('-') {
+        return Err(format!("invalid {what}: {arg}"));
+    }
+    Ok(arg)
+}
+
+/// `git worktree add`: checks `branch` out into a new worktree at `path`
+/// (with `create`, a new branch of that name off HEAD). git itself enforces
+/// the one-checkout-per-branch rule and refuses an unusable `path`.
+pub fn worktree_add(
+    workdir: &Path,
+    path: &Path,
+    branch: &str,
+    create: bool,
+) -> Result<String, String> {
+    let branch = worktree_arg(branch, "branch name")?;
+    let path_str = path.to_string_lossy().into_owned();
+    let path_arg = worktree_arg(&path_str, "worktree path")?;
+    if create {
+        run_git(
+            workdir,
+            &["worktree", "add", "-b", branch, path_arg],
+            "git worktree add failed",
+        )?;
+    } else {
+        run_git(
+            workdir,
+            &["worktree", "add", path_arg, branch],
+            "git worktree add failed",
+        )?;
+    }
+    Ok(format!("worktree added at {path_arg}"))
+}
+
+/// How an unforced worktree removal ended: `Dirty` means git refused because
+/// the worktree has uncommitted changes -- a decision for the user, not an
+/// error, so it maps to [`super::Update::WorktreeDirty`] rather than `Err`.
+pub enum WorktreeRemoveOutcome {
+    Done(String),
+    Dirty,
+}
+
+/// `git worktree remove [--force]`: deletes the worktree's directory and its
+/// bookkeeping; the branch it had checked out is kept. Detects git's
+/// dirty-worktree refusal (its message directs at `--force`) and reports it
+/// as [`WorktreeRemoveOutcome::Dirty`] for the UI to escalate.
+pub fn worktree_remove(
+    workdir: &Path,
+    path: &Path,
+    force: bool,
+) -> Result<WorktreeRemoveOutcome, String> {
+    let path_str = path.to_string_lossy().into_owned();
+    let path_arg = worktree_arg(&path_str, "worktree path")?;
+    let args: &[&str] = if force {
+        &["worktree", "remove", "--force", path_arg]
+    } else {
+        &["worktree", "remove", path_arg]
+    };
+    let output = git_output(workdir, args)?;
+    if output.status.success() {
+        return Ok(WorktreeRemoveOutcome::Done(format!(
+            "worktree removed: {path_arg}"
+        )));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // "fatal: '<path>' contains modified or untracked files, use --force ..."
+    if !force && (stderr.contains("--force") || stdout.contains("--force")) {
+        return Ok(WorktreeRemoveOutcome::Dirty);
+    }
+    Err(last_nonempty(
+        &stderr,
+        &stdout,
+        "git worktree remove failed",
+    ))
+}
+
+/// `git worktree prune`: drops the records of worktrees whose directories no
+/// longer exist. The dimmed stale entries in the bar ride on this.
+pub fn worktree_prune(workdir: &Path) -> Result<String, String> {
+    run_git(workdir, &["worktree", "prune"], "git worktree prune failed")?;
+    Ok("stale worktrees pruned".to_string())
 }
 
 /// Snapshots every submodule's state from its `SubmoduleStatus` flags. Paths
@@ -1944,6 +2099,58 @@ fn run_step(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn parse_worktrees_reads_main_linked_detached_and_stale() {
+        let porcelain = "worktree /repo/main\n\
+                         HEAD 1234567890abcdef1234567890abcdef12345678\n\
+                         branch refs/heads/main\n\
+                         \n\
+                         worktree /repo/main-feature\n\
+                         HEAD aabbccdd90abcdef1234567890abcdef12345678\n\
+                         branch refs/heads/feature\n\
+                         \n\
+                         worktree /repo/main-spike\n\
+                         HEAD ffeeddcc90abcdef1234567890abcdef12345678\n\
+                         detached\n\
+                         \n\
+                         worktree /repo/gone\n\
+                         HEAD 1234567890abcdef1234567890abcdef12345678\n\
+                         branch refs/heads/old\n\
+                         prunable gitdir file points to non-existent location\n";
+        let wts = parse_worktrees(porcelain);
+        assert_eq!(wts.len(), 4);
+        assert!(wts[0].is_main && !wts[1].is_main);
+        assert_eq!(wts[0].branch, "main");
+        assert_eq!(wts[1].path, std::path::PathBuf::from("/repo/main-feature"));
+        assert!(wts[2].detached);
+        assert_eq!(wts[2].branch, "ffeeddc"); // short id stands in for a branch
+        assert!(wts[3].stale && !wts[2].stale);
+    }
+
+    #[test]
+    fn parse_worktrees_skips_bare_and_keeps_locked() {
+        let porcelain = "worktree /srv/repo.git\n\
+                         bare\n\
+                         \n\
+                         worktree /srv/checkout\n\
+                         HEAD 1234567890abcdef1234567890abcdef12345678\n\
+                         branch refs/heads/main\n\
+                         locked reason here\n";
+        let wts = parse_worktrees(porcelain);
+        assert_eq!(wts.len(), 1);
+        // The bare entry held the main slot; the surviving linked one must
+        // not inherit it.
+        assert!(!wts[0].is_main);
+        assert!(wts[0].locked);
+    }
+
+    #[test]
+    fn worktree_args_reject_flags_and_empties() {
+        assert!(worktree_arg("-rf", "worktree path").is_err());
+        assert!(worktree_arg("  ", "branch name").is_err());
+        assert!(worktree_arg("feature/x", "branch name").is_ok());
+    }
 
     #[test]
     fn discard_restores_tracked_deletes_untracked_keeps_staged() {

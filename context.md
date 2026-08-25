@@ -29,6 +29,22 @@ After branching `feature` off `main` and making three commits, those three are b
 
 The commit graph view mode that dims every commit that is not a branch-only commit, so the current branch's own work stands out against the shared history. Toggled from the COMMIT GRAPH header; inactive (a no-op) when there are no branch-only commits, since dimming the whole graph would read as a broken display.
 
+### Worktree
+
+A checkout of the repository with its own directory: the original clone is the **main worktree**, additional checkouts created via `git worktree add` are **linked worktrees**, and a linked worktree whose directory no longer exists on disk (but which git still lists) is **stale**. A branch can be checked out in at most one worktree at a time. The bare word "worktree" always means this concept — never the staged/unstaged panel (see Working tree).
+
+#### Example
+
+Parking a long-running `feature` branch in a linked worktree at `../gitgud-feature` lets the user build or test it while the main worktree stays on `main`.
+
+### Working tree
+
+The files of a single checkout as they exist on disk — what the staged/unstaged panel inspects. Distinct from a worktree: a worktree is a checkout location; the working tree is the state of the files within one.
+
+#### Synonyms
+
+Working directory. *Avoid:* worktree (reserved for the checkout-location concept above).
+
 ### Uncommitted changes
 
 Any modification to files in the working directory that have not yet been saved to the repository's history with a commit. This includes staged and unstaged changes. This includes dirty submodules.
