@@ -6,6 +6,7 @@ pub mod graph;
 mod highlight;
 pub mod progress;
 mod reveal;
+pub mod settings;
 pub mod shell;
 pub mod sidebar;
 pub mod submodules;

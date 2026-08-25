@@ -82,10 +82,16 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
             if name.ends_with("/HEAD") {
                 continue;
             }
+            let latest_commit_time = branch
+                .get()
+                .peel_to_commit()
+                .ok()
+                .map(|commit| commit.time().seconds());
             remotes.push(BranchInfo {
                 name,
                 is_head: false,
                 is_remote: true,
+                latest_commit_time,
                 ahead: 0,
                 behind: 0,
             });
@@ -98,10 +104,16 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
             },
             _ => (0, 0), // no upstream configured
         };
+        let latest_commit_time = branch
+            .get()
+            .peel_to_commit()
+            .ok()
+            .map(|commit| commit.time().seconds());
         locals.push(BranchInfo {
             name,
             is_head: branch.is_head(),
             is_remote: false,
+            latest_commit_time,
             ahead,
             behind,
         });
@@ -2099,6 +2111,51 @@ fn run_step(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn refresh_reads_tip_time_for_local_and_remote_branches() {
+        let dir =
+            std::env::temp_dir().join(format!("gitgud_branch_age_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+
+        fs::write(dir.join("tracked.txt"), "base\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let time = git2::Time::new(1_234_567, 0);
+        let signature = git2::Signature::new("test", "test@example.com", &time).unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &signature, &signature, "base", &tree, &[])
+            .unwrap();
+        let commit = repo.find_commit(oid).unwrap();
+        repo.branch("old-local", &commit, false).unwrap();
+        repo.reference("refs/remotes/origin/old-remote", oid, false, "test")
+            .unwrap();
+        drop(commit);
+        drop(tree);
+
+        let data = refresh(&repo).unwrap();
+        let local = data
+            .branches
+            .iter()
+            .find(|branch| branch.name == "old-local")
+            .unwrap();
+        let remote = data
+            .branches
+            .iter()
+            .find(|branch| branch.name == "origin/old-remote")
+            .unwrap();
+        assert!(!local.is_remote);
+        assert!(remote.is_remote);
+        assert_eq!(local.latest_commit_time, Some(1_234_567));
+        assert_eq!(remote.latest_commit_time, Some(1_234_567));
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parse_worktrees_reads_main_linked_detached_and_stale() {

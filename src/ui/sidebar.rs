@@ -1,5 +1,7 @@
 //! Left "ops" column: the BRANCHES module and its checkout confirm flow.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use eframe::egui::{
     Align, Align2, CentralPanel, CornerRadius, Frame, Id, Key, Layout, Margin, Panel, RichText,
     Sense, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
@@ -7,7 +9,7 @@ use eframe::egui::{
 
 use super::{HudButton, module, submodules, tree, vscroll};
 use crate::app::{NewBranch, PendingMerge, RepoTab};
-use crate::git::{Job, MergeDirection};
+use crate::git::{BranchInfo, Job, MergeDirection};
 use crate::theme::{self, ACCENT, AMBER, BG3, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// What the user asked of a branch row: a double-click runs the Checkout Flow,
@@ -31,7 +33,7 @@ enum BranchAction {
 
 /// The BRANCHES module plus its flow modals. A double-click runs the Checkout
 /// Flow; the context menu opens the Merge Branch Flow or the new-branch dialog.
-pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cutoff_seconds: i64) {
     // With submodules, SUBMODULES takes a resizable strip at the bottom and
     // BRANCHES fills the rest; without, BRANCHES owns the whole column.
     if !tab.submodules.is_empty() {
@@ -47,9 +49,11 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
             .show_inside(ui, |ui| submodules::show(ui, tab, jobs));
         CentralPanel::default()
             .frame(Frame::new())
-            .show_inside(ui, |ui| branches_module(ui, tab, jobs));
+            .show_inside(ui, |ui| {
+                branches_module(ui, tab, jobs, stale_cutoff_seconds)
+            });
     } else {
-        branches_module(ui, tab, jobs);
+        branches_module(ui, tab, jobs, stale_cutoff_seconds);
     }
     checkout_flow_modal(ui, tab, jobs);
     merge_flow_modal(ui, tab, jobs);
@@ -59,10 +63,12 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 /// The BRANCHES module proper. A clean checkout fires immediately; anything
 /// that needs a decision (a blocked checkout, a merge) arms a modal run by
 /// `show`. Either way, starting a flow clears any stale into-selected restore.
-fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cutoff_seconds: i64) {
     let readout = format!("{:02}", tab.branches.len());
     let action = module(ui, None, "BRANCHES", &readout, |ui| {
-        vscroll("branches").show(ui, |ui| branches(ui, tab)).inner
+        vscroll("branches")
+            .show(ui, |ui| branches(ui, tab, stale_cutoff_seconds))
+            .inner
     });
     match action {
         Some(BranchAction::Checkout(name)) => {
@@ -427,9 +433,13 @@ fn confirm_new_branch(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 /// double-click on a non-HEAD branch arms a checkout, the right-click menu arms a
 /// new branch from that row, and a click on a folder toggles it. The caller
 /// confirms branch actions before acting.
-fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
+fn branches(ui: &mut Ui, tab: &RepoTab, stale_cutoff_seconds: i64) -> Option<BranchAction> {
     let font = TextStyle::Body.resolve(ui.style());
     let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
 
     let nodes = tree::build(tab.branches.iter().map(|b| b.name.as_str()), "");
     let rows = tree::rows(&nodes, &tab.collapsed_folders);
@@ -466,6 +476,7 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
             }
             tree::RowKind::Leaf(i) => {
                 let b = &tab.branches[i];
+                let stale = branch_is_stale(b, now, stale_cutoff_seconds);
                 if b.is_head {
                     // The checked-out branch reads as the "armed" row.
                     p.rect_filled(rect, CornerRadius::ZERO, theme::alpha(AMBER, 16));
@@ -476,18 +487,19 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
                 // final segment.
                 let leaf = b.name.rsplit('/').next().unwrap_or(&b.name);
                 if b.is_remote {
+                    let color = if stale { DIM } else { PURPLE };
                     // Hollow node marker, painted: Rajdhani has no ◦ glyph.
                     p.circle_stroke(
                         pos2(rect.left() + 9.0 + indent, y),
                         3.0,
-                        Stroke::new(1.0_f32, PURPLE),
+                        Stroke::new(1.0_f32, color),
                     );
                     p.text(
                         pos2(rect.left() + 20.0 + indent, y),
                         Align2::LEFT_CENTER,
                         leaf,
                         font.clone(),
-                        PURPLE,
+                        color,
                     );
                 } else {
                     if b.is_head {
@@ -504,9 +516,25 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
                         Align2::LEFT_CENTER,
                         leaf,
                         font.clone(),
-                        if b.is_head { AMBER } else { TEXT },
+                        if b.is_head {
+                            AMBER
+                        } else if stale {
+                            DIM
+                        } else {
+                            TEXT
+                        },
                     );
                     let mut right = rect.right() - 4.0;
+                    if stale {
+                        let r = p.text(
+                            pos2(right, y),
+                            Align2::RIGHT_CENTER,
+                            "STALE",
+                            theme::display_font(9.0),
+                            DIM,
+                        );
+                        right = r.left() - 7.0;
+                    }
                     if b.behind > 0 {
                         let r = p.text(
                             pos2(right, y),
@@ -526,6 +554,15 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
                             GREEN,
                         );
                     }
+                }
+                if b.is_remote && stale {
+                    p.text(
+                        pos2(rect.right() - 4.0, y),
+                        Align2::RIGHT_CENTER,
+                        "STALE",
+                        theme::display_font(9.0),
+                        DIM,
+                    );
                 }
                 if resp.double_clicked() && !b.is_head {
                     action = Some(BranchAction::Checkout(b.name.clone()));
@@ -565,4 +602,47 @@ fn branches(ui: &mut Ui, tab: &RepoTab) -> Option<BranchAction> {
         }
     }
     action
+}
+
+/// Strict boundary rule from issue #6: a branch is stale only when its tip is
+/// older than the cutoff. HEAD is explicitly exempt so its armed-row treatment
+/// is unchanged even if its commit is old.
+fn branch_is_stale(branch: &BranchInfo, now: i64, cutoff_seconds: i64) -> bool {
+    !branch.is_head
+        && branch
+            .latest_commit_time
+            .is_some_and(|tip| tip < now.saturating_sub(cutoff_seconds))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn branch(latest_commit_time: Option<i64>) -> BranchInfo {
+        BranchInfo {
+            name: "topic".to_string(),
+            is_head: false,
+            is_remote: false,
+            latest_commit_time,
+            ahead: 0,
+            behind: 0,
+        }
+    }
+
+    #[test]
+    fn stale_boundary_is_strict_and_reclassifies_with_cutoff() {
+        let now = 10_000;
+        let branch = branch(Some(9_000));
+        assert!(!branch_is_stale(&branch, now, 1_000));
+        assert!(branch_is_stale(&branch, now, 999));
+        assert!(!branch_is_stale(&branch, now, 1_001));
+    }
+
+    #[test]
+    fn checked_out_and_unreadable_tips_are_never_stale() {
+        let mut current = branch(Some(1));
+        current.is_head = true;
+        assert!(!branch_is_stale(&current, 10_000, 1));
+        assert!(!branch_is_stale(&branch(None), 10_000, 1));
+    }
 }
