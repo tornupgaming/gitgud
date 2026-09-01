@@ -28,6 +28,79 @@ use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
 /// builds) collapse into one status scan per window instead of one per event.
 const AUTO_REFRESH_GAP: Duration = Duration::from_millis(800);
 
+/// Unit used by the stale-branch cutoff. A month is deliberately a stable
+/// 30-day duration rather than a calendar month: branch ages are timestamps,
+/// and the comparison must not change with the current month's length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleCutoffUnit {
+    Weeks,
+    Months,
+}
+
+impl StaleCutoffUnit {
+    fn seconds(self) -> i64 {
+        match self {
+            Self::Weeks => 7 * 24 * 60 * 60,
+            Self::Months => 30 * 24 * 60 * 60,
+        }
+    }
+
+    fn config_name(self) -> &'static str {
+        match self {
+            Self::Weeks => "weeks",
+            Self::Months => "months",
+        }
+    }
+}
+
+/// Persisted stale-branch preference. Kept independent of repositories so a
+/// change applies to every open branch list immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaleBranchSettings {
+    pub amount: u32,
+    pub unit: StaleCutoffUnit,
+}
+
+impl Default for StaleBranchSettings {
+    fn default() -> Self {
+        Self {
+            amount: 1,
+            unit: StaleCutoffUnit::Months,
+        }
+    }
+}
+
+impl StaleBranchSettings {
+    pub fn cutoff_seconds(self) -> i64 {
+        i64::from(self.amount).saturating_mul(self.unit.seconds())
+    }
+
+    fn encode(self) -> String {
+        format!(
+            "stale_branch_cutoff={} {}\n",
+            self.amount,
+            self.unit.config_name()
+        )
+    }
+
+    fn decode(input: &str) -> Option<Self> {
+        let value = input
+            .lines()
+            .find_map(|line| line.strip_prefix("stale_branch_cutoff="))?;
+        let mut parts = value.split_whitespace();
+        let amount = parts.next()?.parse::<u32>().ok()?;
+        let unit = match parts.next()? {
+            "weeks" => StaleCutoffUnit::Weeks,
+            "months" => StaleCutoffUnit::Months,
+            _ => return None,
+        };
+        if amount == 0 || parts.next().is_some() {
+            return None;
+        }
+        Some(Self { amount, unit })
+    }
+}
+
 /// A branch-creation awaiting a name, armed by "create branch from here" on a
 /// commit or branch. `start_point` is what the new branch points at (a commit
 /// id or branch name); `label` is its short display form; `name` is the
@@ -409,6 +482,8 @@ pub struct GitGudApp {
     prev_focused: bool,
     /// Lines scrolled per mouse-wheel notch, from the OS where readable.
     wheel_lines: f32,
+    stale_branch_settings: StaleBranchSettings,
+    settings_draft: Option<StaleBranchSettings>,
 }
 
 /// How many lines one wheel notch scrolls. winit reports raw notches without
@@ -447,6 +522,8 @@ impl GitGudApp {
             app_log: None,
             prev_focused: true,
             wheel_lines: wheel_scroll_lines(),
+            stale_branch_settings: Self::load_settings(),
+            settings_draft: None,
         };
         for path in Self::load_repo_list() {
             app.open_repo(path);
@@ -537,6 +614,14 @@ impl GitGudApp {
     }
 
     fn repos_file() -> Option<PathBuf> {
+        Self::config_dir().map(|d| d.join("repos.txt"))
+    }
+
+    fn settings_file() -> Option<PathBuf> {
+        Self::config_dir().map(|d| d.join("settings.txt"))
+    }
+
+    fn config_dir() -> Option<PathBuf> {
         let base = if cfg!(windows) {
             std::env::var_os("APPDATA").map(PathBuf::from)
         } else {
@@ -546,7 +631,24 @@ impl GitGudApp {
                 .filter(|p| p.is_absolute())
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         };
-        base.map(|d| d.join("gitgud").join("repos.txt"))
+        base.map(|d| d.join("gitgud"))
+    }
+
+    fn load_settings() -> StaleBranchSettings {
+        Self::settings_file()
+            .and_then(|file| std::fs::read_to_string(file).ok())
+            .and_then(|input| StaleBranchSettings::decode(&input))
+            .unwrap_or_default()
+    }
+
+    fn save_settings(&self) {
+        let Some(file) = Self::settings_file() else {
+            return;
+        };
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(file, self.stale_branch_settings.encode());
     }
 
     fn load_repo_list() -> Vec<PathBuf> {
@@ -1153,6 +1255,9 @@ impl eframe::App for GitGudApp {
                     jobs.push(Job::Pull { id: t.id });
                 }
             }
+            Some(TopBarAction::Settings) => {
+                self.settings_draft = Some(self.stale_branch_settings);
+            }
             None => {}
         }
 
@@ -1219,7 +1324,14 @@ impl eframe::App for GitGudApp {
                     top: 2,
                     bottom: 8,
                 }))
-                .show_inside(ui, |ui| ui::sidebar::show(ui, tab, &mut jobs));
+                .show_inside(ui, |ui| {
+                    ui::sidebar::show(
+                        ui,
+                        tab,
+                        &mut jobs,
+                        self.stale_branch_settings.cutoff_seconds(),
+                    )
+                });
             Panel::right("worktree")
                 .resizable(true)
                 .default_size(340.0)
@@ -1272,6 +1384,11 @@ impl eframe::App for GitGudApp {
         // with the reconcile dialog: a divergence drains the op as it arms it.
         if let Some(t) = self.tabs.get(self.active) {
             ui::progress::show(ui, t);
+        }
+
+        if let Some(settings) = ui::settings::show(ui, &mut self.settings_draft) {
+            self.stale_branch_settings = settings;
+            self.save_settings();
         }
 
         // CRT scanlines over the whole frame, then the outer HUD bezel:
@@ -1330,6 +1447,37 @@ impl eframe::App for GitGudApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_branch_settings_default_to_one_month_and_round_trip() {
+        let default = StaleBranchSettings::default();
+        assert_eq!(default.amount, 1);
+        assert_eq!(default.unit, StaleCutoffUnit::Months);
+        assert_eq!(default.cutoff_seconds(), 30 * 24 * 60 * 60);
+        assert_eq!(
+            StaleBranchSettings::decode(&default.encode()),
+            Some(default)
+        );
+
+        let weeks = StaleBranchSettings {
+            amount: 6,
+            unit: StaleCutoffUnit::Weeks,
+        };
+        assert_eq!(StaleBranchSettings::decode(&weeks.encode()), Some(weeks));
+    }
+
+    #[test]
+    fn malformed_stale_branch_settings_are_rejected() {
+        for input in [
+            "",
+            "stale_branch_cutoff=0 weeks",
+            "stale_branch_cutoff=1 years",
+            "stale_branch_cutoff=weeks 1",
+            "stale_branch_cutoff=1 months extra",
+        ] {
+            assert!(StaleBranchSettings::decode(input).is_none(), "{input}");
+        }
+    }
 
     #[test]
     fn ref_paths_are_ref_changes() {

@@ -29,6 +29,12 @@ After branching `feature` off `main` and making three commits, those three are b
 
 The commit graph view mode that dims every commit that is not a branch-only commit, so the current branch's own work stands out against the shared history. Toggled from the COMMIT GRAPH header; inactive (a no-op) when there are no branch-only commits, since dimming the whole graph would read as a broken display.
 
+### Stale branch
+
+A local or remote branch whose latest commit is older than the user's configured stale-branch cutoff. It remains visible in its original position and keeps every normal branch action, but the branch list dims it and adds a `STALE` indicator. The checked-out branch is never presented as stale, preserving its armed-row treatment.
+
+Distinct from a **stale worktree**, which is missing from disk.
+
 ### Worktree
 
 A checkout of the repository with its own directory: the original clone is the **main worktree**, additional checkouts created via `git worktree add` are **linked worktrees**, and a linked worktree whose directory no longer exists on disk (but which git still lists) is **stale**. A branch can be checked out in at most one worktree at a time. The bare word "worktree" always means this concept — never the staged/unstaged panel (see Working tree).

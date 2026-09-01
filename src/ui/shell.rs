@@ -18,6 +18,7 @@ pub enum TopBarAction {
     Fetch,
     Push,
     Pull,
+    Settings,
 }
 
 /// Command deck: logo, repo tab plates, OPEN, and the network actions
@@ -41,6 +42,9 @@ pub fn top_bar(ui: &mut Ui, tabs: &[RepoTab], active: usize) -> Option<TopBarAct
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // All network actions need a loaded repo; disabled until then.
             let ready = tabs.get(active).is_some_and(|t| t.loaded);
+            if ui.add(HudButton::new("SETTINGS")).clicked() {
+                action = Some(TopBarAction::Settings);
+            }
             if ui.add_enabled(ready, HudButton::new("⟳ FETCH")).clicked() {
                 action = Some(TopBarAction::Fetch);
             }

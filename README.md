@@ -17,6 +17,7 @@ Requirements: Windows 10+, and `git` on `PATH` for fetch/pull/push (everything l
 - **Tabs** — open any number of repos; the list persists across launches.
 - **Working tree** — stage/unstage per file or all at once, discard with confirm, commit with `Ctrl+Enter`.
 - **Commit graph** — multi-lane DAG with ref chips and a WIP row, paged 250 commits at a time.
+- **Stale branches** — dim and label inactive local and remote branches using a persisted weeks/months cutoff.
 - **Diff viewer** — syntax-highlighted, virtualized, handles large diffs without stutter.
 - **Merging** — merge any branch, then resolve conflicts block-by-block (ours / theirs / both) in a dedicated UI; binary and delete conflicts get whole-file resolution.
 - **Network** — fetch / pull (`--ff-only`) / push run on their own thread, so the UI and local operations never block on the network.
@@ -49,7 +50,7 @@ Two threads, message passing, no locks:
 
 All colors, fonts, and paint primitives live in `src/theme.rs`; UI panels are drawn as chamfered HUD "modules". The bundled Rajdhani font is licensed under the [SIL OFL](assets/fonts/OFL.txt).
 
-State on disk: the open-repo list at `%APPDATA%\gitgud\repos.txt`. Nothing else.
+State on disk: the open-repo list at `%APPDATA%\gitgud\repos.txt` and global preferences at `%APPDATA%\gitgud\settings.txt`.
 
 ## Security model
 

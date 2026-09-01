@@ -445,6 +445,9 @@ pub struct BranchInfo {
     pub name: String,
     pub is_head: bool,
     pub is_remote: bool,
+    /// Unix timestamp of the branch tip commit. `None` only when the ref
+    /// cannot be peeled to a commit; such a branch is never called stale.
+    pub latest_commit_time: Option<i64>,
     /// Commits ahead/behind the upstream branch. Both 0 when no upstream.
     pub ahead: usize,
     pub behind: usize,
