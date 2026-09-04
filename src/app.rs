@@ -75,6 +75,17 @@ impl StaleBranchSettings {
         i64::from(self.amount).saturating_mul(self.unit.seconds())
     }
 
+    /// The cutoff as the user set it ("1 month", "6 weeks"), for dialog copy.
+    pub fn label(self) -> String {
+        let unit = match (self.unit, self.amount) {
+            (StaleCutoffUnit::Weeks, 1) => "week",
+            (StaleCutoffUnit::Weeks, _) => "weeks",
+            (StaleCutoffUnit::Months, 1) => "month",
+            (StaleCutoffUnit::Months, _) => "months",
+        };
+        format!("{} {unit}", self.amount)
+    }
+
     fn encode(self) -> String {
         format!(
             "stale_branch_cutoff={} {}\n",
@@ -164,6 +175,20 @@ impl NewWorktree {
 pub struct PendingWorktreeRemove {
     pub path: PathBuf,
     pub dirty: bool,
+}
+
+/// The Stale Branch Cleanup Flow's preview, held while its modal is up. The
+/// candidate list itself is recomputed every frame from the live branch
+/// snapshot (a refresh may add or drop one); this holds only the user's
+/// decisions. `checked` is the set that will be deleted on confirm: merged
+/// candidates are seeded in, an unmerged one enters only through its own
+/// checkbox -- that tick *is* the acknowledgement of its unmerged work, and it
+/// covers that branch alone. `errors` carries git's refusals from the last
+/// attempt so the branches that survived show why.
+#[derive(Clone, Default)]
+pub struct PendingCleanup {
+    pub checked: HashSet<String>,
+    pub errors: Vec<(String, String)>,
 }
 
 /// UI-side state for one open repository: the worker's latest snapshots plus
@@ -261,6 +286,9 @@ pub struct RepoTab {
     pub pending_worktree_add: Option<NewWorktree>,
     /// Worktree removal awaiting confirmation; the job only fires on confirm.
     pub pending_worktree_remove: Option<PendingWorktreeRemove>,
+    /// Stale Branch Cleanup Flow preview awaiting confirm. Opening it has no
+    /// side effects; `Job::DeleteBranches` fires only from its DELETE button.
+    pub pending_cleanup: Option<PendingCleanup>,
     /// Confirmed removal `(path, force)` to dispatch after layout: the
     /// target's tab (if open) must be closed first so the worker drops its
     /// repo handle before the delete, and that needs `&mut self`.
@@ -335,6 +363,7 @@ impl RepoTab {
             pending_open_submodule: None,
             pending_worktree_add: None,
             pending_worktree_remove: None,
+            pending_cleanup: None,
             worktree_remove_go: None,
             opening_worktree: None,
             in_flight: 0,
@@ -994,6 +1023,45 @@ impl GitGudApp {
                 self.tabs[idx].pending_worktree_remove =
                     Some(PendingWorktreeRemove { path, dirty: true });
             }
+            Update::BranchesDeleted {
+                deleted, failed, ..
+            } => {
+                {
+                    let t = &mut self.tabs[idx];
+                    let plural = |n: usize| if n == 1 { "branch" } else { "branches" };
+                    if let Some((name, reason)) = failed.first() {
+                        let more = match failed.len() {
+                            1 => String::new(),
+                            n => format!(" (and {} more)", n - 1),
+                        };
+                        let done = match deleted.len() {
+                            0 => String::new(),
+                            n => format!("deleted {n}; "),
+                        };
+                        t.log = Some((
+                            true,
+                            format!("{done}could not delete {name}: {reason}{more}"),
+                        ));
+                        // Every refused branch is still there: reopen the
+                        // preview with git's reasons beside them. Nothing is
+                        // pre-checked this time -- the user reads before
+                        // retrying.
+                        t.pending_cleanup = Some(PendingCleanup {
+                            checked: HashSet::new(),
+                            errors: failed,
+                        });
+                    } else {
+                        let n = deleted.len();
+                        t.log = Some((false, format!("deleted {n} stale {}", plural(n))));
+                    }
+                }
+                // Whatever was deleted moved refs: the branch list and the
+                // graph's decorations both need recomputing.
+                if !deleted.is_empty() {
+                    self.send(Job::Refresh { id });
+                    self.send(Job::LoadHistory { id, skip: 0 });
+                }
+            }
             // Folded into the matching op above, then returned early.
             Update::Progress { .. } => unreachable!("Progress is handled before this match"),
         }
@@ -1025,7 +1093,8 @@ fn job_id(job: &Job) -> RepoId {
         | Job::UpdateSubmodules { id, .. }
         | Job::WorktreeAdd { id, .. }
         | Job::WorktreeRemove { id, .. }
-        | Job::WorktreePrune { id } => *id,
+        | Job::WorktreePrune { id }
+        | Job::DeleteBranches { id, .. } => *id,
     }
 }
 
@@ -1093,6 +1162,7 @@ fn update_id(upd: &Update) -> RepoId {
         | Update::Diverged { id, .. }
         | Update::NoOrigin { id }
         | Update::WorktreeDirty { id, .. }
+        | Update::BranchesDeleted { id, .. }
         | Update::Progress { id, .. } => *id,
     }
 }
@@ -1215,6 +1285,7 @@ impl eframe::App for GitGudApp {
                 && t.pending_remote.is_none()
                 && t.pending_worktree_add.is_none()
                 && t.pending_worktree_remove.is_none()
+                && t.pending_cleanup.is_none()
                 && t.net_ops.is_empty()
                 && !t.pending_abort_merge
             {
@@ -1325,12 +1396,7 @@ impl eframe::App for GitGudApp {
                     bottom: 8,
                 }))
                 .show_inside(ui, |ui| {
-                    ui::sidebar::show(
-                        ui,
-                        tab,
-                        &mut jobs,
-                        self.stale_branch_settings.cutoff_seconds(),
-                    )
+                    ui::sidebar::show(ui, tab, &mut jobs, self.stale_branch_settings)
                 });
             Panel::right("worktree")
                 .resizable(true)
@@ -1464,6 +1530,21 @@ mod tests {
             unit: StaleCutoffUnit::Weeks,
         };
         assert_eq!(StaleBranchSettings::decode(&weeks.encode()), Some(weeks));
+    }
+
+    #[test]
+    fn stale_branch_settings_label_reads_naturally() {
+        assert_eq!(StaleBranchSettings::default().label(), "1 month");
+        let weeks = StaleBranchSettings {
+            amount: 6,
+            unit: StaleCutoffUnit::Weeks,
+        };
+        assert_eq!(weeks.label(), "6 weeks");
+        let week = StaleBranchSettings {
+            amount: 1,
+            unit: StaleCutoffUnit::Weeks,
+        };
+        assert_eq!(week.label(), "1 week");
     }
 
     #[test]

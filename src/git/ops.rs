@@ -20,9 +20,10 @@ use git2::{
 };
 
 use super::{
-    BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData, DiffKey, DiffLine,
-    FileChange, FileDiff, HistoryPage, LineKind, MergeDirection, MergeInfo, ProgressEvent,
-    RefreshData, RepoMeta, Resolution, StepState, SubmoduleInfo, SyncStrategy, WorktreeInfo,
+    BranchDelete, BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData,
+    DiffKey, DiffLine, FileChange, FileDiff, HistoryPage, LineKind, MergeDirection, MergeInfo,
+    ProgressEvent, RefreshData, RepoMeta, Resolution, StepState, SubmoduleInfo, SyncStrategy,
+    WorktreeInfo,
 };
 
 /// A sink for live progress from a long-running op. The worker hands each
@@ -68,6 +69,8 @@ pub fn open(path: &Path) -> Result<(Repository, RepoMeta), String> {
 /// every mutating action rather than tracking state incrementally.
 pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
     let (head, head_detached) = head_label(repo)?;
+    // `None` on an unborn HEAD: nothing is merged into it yet.
+    let head_oid = repo.head().ok().and_then(|h| h.target());
 
     let mut locals: Vec<BranchInfo> = Vec::new();
     let mut remotes: Vec<BranchInfo> = Vec::new();
@@ -92,18 +95,25 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
                 is_head: false,
                 is_remote: true,
                 latest_commit_time,
+                unmerged: false,
                 ahead: 0,
                 behind: 0,
             });
             continue;
         }
-        let (ahead, behind) = match (branch.get().target(), branch.upstream()) {
-            (Some(local_oid), Ok(upstream)) => match upstream.get().target() {
-                Some(up_oid) => repo.graph_ahead_behind(local_oid, up_oid).map_err(g)?,
-                None => (0, 0),
-            },
+        let local_oid = branch.get().target();
+        let upstream_oid = branch.upstream().ok().and_then(|u| u.get().target());
+        let (ahead, behind) = match (local_oid, upstream_oid) {
+            (Some(local_oid), Some(up_oid)) => {
+                repo.graph_ahead_behind(local_oid, up_oid).map_err(g)?
+            }
             _ => (0, 0), // no upstream configured
         };
+        // Mirrors `git branch -d`'s safety test: merged into HEAD, or into the
+        // branch's own upstream. An unreadable tip counts as merged -- there
+        // is nothing to lose, and the branch is never called stale anyway.
+        let unmerged = local_oid
+            .is_some_and(|tip| !reaches(repo, head_oid, tip) && !reaches(repo, upstream_oid, tip));
         let latest_commit_time = branch
             .get()
             .peel_to_commit()
@@ -114,6 +124,7 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
             is_head: branch.is_head(),
             is_remote: false,
             latest_commit_time,
+            unmerged,
             ahead,
             behind,
         });
@@ -236,6 +247,49 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
 /// All worktrees of the repository enclosing `workdir`, main first (git
 /// guarantees that ordering). Errors degrade to an empty list -- worktree
 /// support then simply hides rather than failing the whole refresh.
+/// Whether `tip` is contained in the history of `from` (equal or an
+/// ancestor). `None` for `from` -- no HEAD, no upstream -- reaches nothing.
+fn reaches(repo: &Repository, from: Option<Oid>, tip: Oid) -> bool {
+    from.is_some_and(|from| from == tip || repo.graph_descendant_of(from, tip).unwrap_or(false))
+}
+
+/// Deletes local branches one at a time via `git branch -d` (or `-D` for an
+/// entry the user acknowledged as unmerged), returning the names git deleted
+/// and the ones it refused with its reason. One refusal never stops the rest.
+/// `-d` keeps git's own not-merged check as the last line of defence, so an
+/// unacknowledged branch with unmerged work survives even if the UI's own
+/// classification missed it. Only ever `refs/heads/`: no `-r`, so a remote or
+/// remote-tracking ref cannot be touched.
+pub fn delete_branches(
+    workdir: &Path,
+    branches: &[BranchDelete],
+) -> (Vec<String>, Vec<(String, String)>) {
+    let mut deleted = Vec::new();
+    let mut failed = Vec::new();
+    for b in branches {
+        // Branch names come from the repo itself; the leading-`-` rejection is
+        // the invariant every CLI-bound name goes through, and `--` ends the
+        // option list regardless.
+        let name = match cli_arg(&b.name, "branch name") {
+            Ok(name) => name,
+            Err(e) => {
+                failed.push((b.name.clone(), e));
+                continue;
+            }
+        };
+        let flag = if b.force { "-D" } else { "-d" };
+        match run_git(
+            workdir,
+            &["branch", flag, "--", name],
+            "git branch delete failed",
+        ) {
+            Ok(_) => deleted.push(b.name.clone()),
+            Err(e) => failed.push((b.name.clone(), e)),
+        }
+    }
+    (deleted, failed)
+}
+
 fn worktree_list(workdir: &Path) -> Vec<WorktreeInfo> {
     run_git(workdir, &["worktree", "list", "--porcelain"], "")
         .map(|(stdout, _)| parse_worktrees(&stdout))
@@ -290,11 +344,11 @@ fn parse_worktrees(porcelain: &str) -> Vec<WorktreeInfo> {
     out
 }
 
-/// Rejects arguments that could read as a CLI flag before they reach
-/// `git worktree`. Branch names and worktree paths both come from user input
-/// (typed or picked), so the leading-`-` rejection the checkout path applies
-/// holds here too.
-fn worktree_arg<'a>(arg: &'a str, what: &str) -> Result<&'a str, String> {
+/// Rejects arguments that could read as a CLI flag before they reach the git
+/// CLI as a positional. Branch names and worktree paths come from user input
+/// (typed or picked) or from the repo itself, so the leading-`-` rejection the
+/// checkout path applies holds for every one of them.
+fn cli_arg<'a>(arg: &'a str, what: &str) -> Result<&'a str, String> {
     let arg = arg.trim();
     if arg.is_empty() {
         return Err(format!("{what} is empty"));
@@ -314,9 +368,9 @@ pub fn worktree_add(
     branch: &str,
     create: bool,
 ) -> Result<String, String> {
-    let branch = worktree_arg(branch, "branch name")?;
+    let branch = cli_arg(branch, "branch name")?;
     let path_str = path.to_string_lossy().into_owned();
-    let path_arg = worktree_arg(&path_str, "worktree path")?;
+    let path_arg = cli_arg(&path_str, "worktree path")?;
     if create {
         run_git(
             workdir,
@@ -351,7 +405,7 @@ pub fn worktree_remove(
     force: bool,
 ) -> Result<WorktreeRemoveOutcome, String> {
     let path_str = path.to_string_lossy().into_owned();
-    let path_arg = worktree_arg(&path_str, "worktree path")?;
+    let path_arg = cli_arg(&path_str, "worktree path")?;
     let args: &[&str] = if force {
         &["worktree", "remove", "--force", path_arg]
     } else {
@@ -2157,6 +2211,123 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A throwaway repo with one root commit, `merged` at that commit, and
+    /// `topic` one commit ahead of it (unmerged). HEAD stays on `master`/`main`.
+    fn repo_with_merged_and_unmerged(tag: &str) -> (std::path::PathBuf, Repository) {
+        let dir = std::env::temp_dir().join(format!("gitgud_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        // Scoped: every git2 object borrows `repo`, which is moved out below.
+        {
+            let sig = git2::Signature::now("test", "test@example.com").unwrap();
+            fs::write(dir.join("a.txt"), "base\n").unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("a.txt")).unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let root = repo
+                .commit(Some("HEAD"), &sig, &sig, "base", &tree, &[])
+                .unwrap();
+            let root_commit = repo.find_commit(root).unwrap();
+            repo.branch("merged", &root_commit, false).unwrap();
+
+            // `topic` gets its own commit that nothing else reaches.
+            fs::write(dir.join("b.txt"), "topic\n").unwrap();
+            index.add_path(Path::new("b.txt")).unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let topic = repo
+                .commit(None, &sig, &sig, "topic work", &tree, &[&root_commit])
+                .unwrap();
+            repo.branch("topic", &repo.find_commit(topic).unwrap(), false)
+                .unwrap();
+            // Leave the index as HEAD's tree again so the worktree reads clean.
+            let mut index = repo.index().unwrap();
+            index.remove_path(Path::new("b.txt")).unwrap();
+            index.write().unwrap();
+            let _ = fs::remove_file(dir.join("b.txt"));
+        }
+        (dir, repo)
+    }
+
+    #[test]
+    fn refresh_flags_unmerged_local_branches_only() {
+        let (dir, repo) = repo_with_merged_and_unmerged("unmerged");
+        let data = refresh(&repo).unwrap();
+        let by_name = |n: &str| data.branches.iter().find(|b| b.name == n).unwrap();
+        assert!(!by_name("merged").unmerged);
+        assert!(by_name("topic").unmerged);
+        assert!(!data.branches.iter().find(|b| b.is_head).unwrap().unmerged);
+
+        // Merged into its upstream (but not HEAD) counts as merged, like -d.
+        {
+            let topic = repo.find_branch("topic", BranchType::Local).unwrap();
+            let topic_oid = topic.get().target().unwrap();
+            // An upstream needs a real remote behind the tracking ref.
+            repo.remote("origin", "https://example.invalid/repo.git")
+                .unwrap();
+            repo.reference("refs/remotes/origin/topic", topic_oid, false, "test")
+                .unwrap();
+            repo.find_branch("topic", BranchType::Local)
+                .unwrap()
+                .set_upstream(Some("origin/topic"))
+                .unwrap();
+        }
+        let data = refresh(&repo).unwrap();
+        assert!(
+            !data
+                .branches
+                .iter()
+                .find(|b| b.name == "topic")
+                .unwrap()
+                .unmerged
+        );
+        assert!(
+            !data
+                .branches
+                .iter()
+                .find(|b| b.name == "origin/topic")
+                .unwrap()
+                .unmerged
+        );
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_branches_refuses_unmerged_unless_forced_and_keeps_going() {
+        let (dir, repo) = repo_with_merged_and_unmerged("delete");
+        let del = |name: &str, force: bool| BranchDelete {
+            name: name.to_string(),
+            force,
+        };
+        // Unforced: the merged branch goes, git refuses the unmerged one, a
+        // flag-shaped name never reaches git, and the rest still run.
+        let (deleted, failed) = delete_branches(
+            &dir,
+            &[
+                del("-d", false),
+                del("topic", false),
+                del("merged", false),
+                del("missing", false),
+            ],
+        );
+        assert_eq!(deleted, vec!["merged".to_string()]);
+        let failed_names: Vec<&str> = failed.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(failed_names, vec!["-d", "topic", "missing"]);
+        assert!(repo.find_branch("topic", BranchType::Local).is_ok());
+        assert!(repo.find_branch("merged", BranchType::Local).is_err());
+
+        // Acknowledged: -D removes the unmerged branch.
+        let (deleted, failed) = delete_branches(&dir, &[del("topic", true)]);
+        assert_eq!(deleted, vec!["topic".to_string()]);
+        assert!(failed.is_empty());
+        assert!(repo.find_branch("topic", BranchType::Local).is_err());
+
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn parse_worktrees_reads_main_linked_detached_and_stale() {
         let porcelain = "worktree /repo/main\n\
@@ -2203,10 +2374,10 @@ mod tests {
     }
 
     #[test]
-    fn worktree_args_reject_flags_and_empties() {
-        assert!(worktree_arg("-rf", "worktree path").is_err());
-        assert!(worktree_arg("  ", "branch name").is_err());
-        assert!(worktree_arg("feature/x", "branch name").is_ok());
+    fn cli_args_reject_flags_and_empties() {
+        assert!(cli_arg("-rf", "worktree path").is_err());
+        assert!(cli_arg("  ", "branch name").is_err());
+        assert!(cli_arg("feature/x", "branch name").is_ok());
     }
 
     #[test]

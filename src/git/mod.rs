@@ -184,6 +184,26 @@ pub enum Job {
     WorktreePrune {
         id: RepoId,
     },
+    /// Delete local branches -- the confirm action of the Stale Branch Cleanup
+    /// Flow. Each entry is tried on its own (`git branch -d`, or `-D` only for
+    /// a branch whose unmerged work the user acknowledged) so one refusal never
+    /// stops the rest; the reply is [`Update::BranchesDeleted`]. Never touches
+    /// a remote or remote-tracking ref.
+    DeleteBranches {
+        id: RepoId,
+        branches: Vec<BranchDelete>,
+    },
+}
+
+/// One local branch to delete. `force` is the user's per-branch
+/// acknowledgement that the branch holds unmerged commits: it turns the safe
+/// `-d` (which git refuses for unmerged work) into `-D`. The UI only sets it
+/// from that branch's own checkbox -- acknowledging one branch never covers
+/// another.
+#[derive(Debug, Clone)]
+pub struct BranchDelete {
+    pub name: String,
+    pub force: bool,
 }
 
 /// A reply from the worker. `Result<_, String>` is Rust's standard
@@ -242,6 +262,15 @@ pub enum Update {
     /// (uncommitted changes). Terminal reply: the UI escalates its confirm
     /// modal to Discard & remove, which re-sends the job with `force`.
     WorktreeDirty { id: RepoId, path: PathBuf },
+    /// Outcome of a [`Job::DeleteBranches`]: the branches git deleted and the
+    /// ones it refused, each with git's reason. Partial success is normal here
+    /// (deletions run one by one), which is why this is not a plain `Acted`:
+    /// the UI refreshes for the deletions *and* surfaces every refusal.
+    BranchesDeleted {
+        id: RepoId,
+        deleted: Vec<String>,
+        failed: Vec<(String, String)>,
+    },
     /// A mid-flight progress report from a long-running network op, streamed
     /// from the worker's network thread *before* the terminal [`Update::Acted`]
     /// (or [`Update::Diverged`]). Several arrive per op; they drive the progress
@@ -448,6 +477,10 @@ pub struct BranchInfo {
     /// Unix timestamp of the branch tip commit. `None` only when the ref
     /// cannot be peeled to a commit; such a branch is never called stale.
     pub latest_commit_time: Option<i64>,
+    /// Local branches only: the tip is reachable from neither HEAD nor the
+    /// branch's own upstream, so deleting it would lose commits -- the same
+    /// test `git branch -d` applies before refusing. Always false for remotes.
+    pub unmerged: bool,
     /// Commits ahead/behind the upstream branch. Both 0 when no upstream.
     pub ahead: usize,
     pub behind: usize,

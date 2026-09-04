@@ -1,15 +1,16 @@
-//! Left "ops" column: the BRANCHES module and its checkout confirm flow.
+//! Left "ops" column: the BRANCHES module and its flow modals (checkout,
+//! merge, new branch, and the Stale Branch Cleanup Flow).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{
-    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Key, Layout, Margin, Panel, RichText,
-    Sense, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
+    Align, Align2, CentralPanel, CornerRadius, Frame, Id, Key, Label, Layout, Margin, Panel,
+    RichText, Sense, Stroke, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
 use super::{HudButton, module, submodules, tree, vscroll};
-use crate::app::{NewBranch, PendingMerge, RepoTab};
-use crate::git::{BranchInfo, Job, MergeDirection};
+use crate::app::{NewBranch, PendingCleanup, PendingMerge, RepoTab, StaleBranchSettings};
+use crate::git::{BranchDelete, BranchInfo, Job, MergeDirection, WorktreeInfo};
 use crate::theme::{self, ACCENT, AMBER, BG3, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// What the user asked of a branch row: a double-click runs the Checkout Flow,
@@ -29,11 +30,16 @@ enum BranchAction {
     /// the birthplace of a repository's first linked worktree.
     NewWorktree(String),
     ToggleFolder(String),
+    /// Open the Stale Branch Cleanup Flow's preview (the header's CLEAN UP).
+    Cleanup,
 }
 
 /// The BRANCHES module plus its flow modals. A double-click runs the Checkout
-/// Flow; the context menu opens the Merge Branch Flow or the new-branch dialog.
-pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cutoff_seconds: i64) {
+/// Flow; the context menu opens the Merge Branch Flow or the new-branch dialog;
+/// the header's CLEAN UP opens the Stale Branch Cleanup Flow. `settings` is
+/// the stale cutoff, which both the STALE tags and the cleanup preview key on.
+pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, settings: StaleBranchSettings) {
+    let stale_cutoff_seconds = settings.cutoff_seconds();
     // With submodules, SUBMODULES takes a resizable strip at the bottom and
     // BRANCHES fills the rest; without, BRANCHES owns the whole column.
     if !tab.submodules.is_empty() {
@@ -58,6 +64,15 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cutoff_se
     checkout_flow_modal(ui, tab, jobs);
     merge_flow_modal(ui, tab, jobs);
     confirm_new_branch(ui, tab, jobs);
+    cleanup_modal(ui, tab, jobs, settings);
+}
+
+/// Seconds since the epoch, the `now` every stale test compares against.
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 /// The BRANCHES module proper. A clean checkout fires immediately; anything
@@ -66,9 +81,32 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cutoff_se
 fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cutoff_seconds: i64) {
     let readout = format!("{:02}", tab.branches.len());
     let action = module(ui, None, "BRANCHES", &readout, |ui| {
-        vscroll("branches")
+        // Cleanup strip: how many local branches the Stale Branch Cleanup
+        // Flow would preview, and the button that opens it. Disabled (not
+        // hidden) when there are none, so the affordance stays discoverable.
+        let stale =
+            cleanup_candidates(&tab.branches, &tab.worktrees, now(), stale_cutoff_seconds).len();
+        let mut cleanup = false;
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(110.0, 20.0), Sense::hover());
+            super::sub_label(ui, rect, &format!("{stale:02} STALE LOCAL"));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                cleanup = ui
+                    .add_enabled(stale > 0, HudButton::new("CLEAN UP…").small(true))
+                    .on_hover_text("preview and delete stale local branches")
+                    .on_disabled_hover_text("no stale local branches to clean up")
+                    .clicked();
+            });
+        });
+        ui.add_space(4.0);
+        let action = vscroll("branches")
             .show(ui, |ui| branches(ui, tab, stale_cutoff_seconds))
-            .inner
+            .inner;
+        if cleanup {
+            Some(BranchAction::Cleanup)
+        } else {
+            action
+        }
     });
     match action {
         Some(BranchAction::Checkout(name)) => {
@@ -108,8 +146,208 @@ fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cu
                 tab.collapsed_folders.insert(path);
             }
         }
+        Some(BranchAction::Cleanup) => {
+            // Arming only opens the preview: merged candidates start checked,
+            // unmerged ones start unchecked and must be ticked one by one.
+            let checked =
+                cleanup_candidates(&tab.branches, &tab.worktrees, now(), stale_cutoff_seconds)
+                    .into_iter()
+                    .filter(|b| !b.unmerged)
+                    .map(|b| b.name.clone())
+                    .collect();
+            tab.pending_cleanup = Some(PendingCleanup {
+                checked,
+                errors: Vec::new(),
+            });
+        }
         None => {}
     }
+}
+
+/// The Stale Branch Cleanup Flow's preview modal: the configured cutoff, every
+/// candidate with its checkbox, UNMERGED marked in amber, and git's refusal
+/// (if a previous attempt left one) under the row. The job fires only on
+/// DELETE, with exactly the checked rows; Cancel, Escape, or a backdrop click
+/// changes nothing. Candidates are re-derived from the live snapshot each frame
+/// so a background refresh can't leave a vanished branch in the list.
+fn cleanup_modal(
+    ui: &mut Ui,
+    tab: &mut RepoTab,
+    jobs: &mut Vec<Job>,
+    settings: StaleBranchSettings,
+) {
+    let t = super::factor(ui.ctx(), Id::new("cleanup"), tab.pending_cleanup.is_some());
+    if tab.pending_cleanup.is_none() {
+        return;
+    }
+    let candidates: Vec<BranchInfo> = cleanup_candidates(
+        &tab.branches,
+        &tab.worktrees,
+        now(),
+        settings.cutoff_seconds(),
+    )
+    .into_iter()
+    .cloned()
+    .collect();
+    let any_unmerged = candidates.iter().any(|b| b.unmerged);
+
+    let ((delete, cancel), closed) = super::hud_modal(
+        ui,
+        "cleanup",
+        "CLEAN UP STALE BRANCHES",
+        ACCENT,
+        440.0,
+        t,
+        |ui| {
+            // `unwrap` is safe: the early return above guards `is_none`.
+            let pc = tab.pending_cleanup.as_mut().unwrap();
+            ui.label(format!(
+                "Local branches with no commits in the last {}:",
+                settings.label()
+            ));
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(
+                    "The current branch and branches checked out in a worktree are not \
+                     listed. Remote branches are never touched.",
+                )
+                .small()
+                .color(DIM),
+            );
+            ui.add_space(8.0);
+
+            if candidates.is_empty() {
+                ui.label(RichText::new("No stale local branches.").color(DIM));
+                ui.add_space(14.0);
+                let ok = ui
+                    .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add(HudButton::new("OK")).clicked()
+                    })
+                    .inner;
+                return (false, ok);
+            }
+
+            vscroll("cleanup_rows")
+                .max_height(260.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for b in &candidates {
+                        let mut on = pc.checked.contains(&b.name);
+                        ui.horizontal(|ui| {
+                            let hover = if b.unmerged {
+                                "acknowledge the unmerged work and delete this branch anyway"
+                            } else {
+                                "delete this branch"
+                            };
+                            if ui.checkbox(&mut on, "").on_hover_text(hover).changed() {
+                                if on {
+                                    pc.checked.insert(b.name.clone());
+                                } else {
+                                    pc.checked.remove(&b.name);
+                                }
+                            }
+                            let color = if b.unmerged { AMBER } else { TEXT };
+                            // The name stays flush-left and truncates against
+                            // the room the right-aligned readouts need.
+                            let reserve = if b.unmerged { 140.0 } else { 70.0 };
+                            ui.scope(|ui| {
+                                ui.set_max_width((ui.available_width() - reserve).max(40.0));
+                                ui.add(Label::new(RichText::new(&b.name).color(color)).truncate());
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if b.unmerged {
+                                    ui.label(RichText::new("UNMERGED").small().color(AMBER));
+                                }
+                                if let Some(tip) = b.latest_commit_time {
+                                    ui.label(
+                                        RichText::new(super::rel_time(tip)).small().color(DIM),
+                                    );
+                                }
+                            });
+                        });
+                        if let Some((_, reason)) = pc.errors.iter().find(|(n, _)| n == &b.name) {
+                            ui.indent(&b.name, |ui| {
+                                ui.add(
+                                    Label::new(
+                                        RichText::new(format!("✕ {reason}")).small().color(RED),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                        }
+                    }
+                });
+
+            if any_unmerged {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "⚠ UNMERGED branches hold commits nothing else reaches; deleting \
+                         one loses them. Each must be ticked on its own.",
+                    )
+                    .small()
+                    .color(AMBER),
+                );
+            }
+            ui.add_space(14.0);
+            let selected = candidates
+                .iter()
+                .filter(|b| pc.checked.contains(&b.name))
+                .count();
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let delete = ui
+                    .add_enabled(
+                        selected > 0,
+                        HudButton::new(format!("DELETE {selected}")).text_color(RED),
+                    )
+                    .clicked();
+                let cancel = ui.add(HudButton::new("CANCEL")).clicked();
+                (delete, cancel)
+            })
+            .inner
+        },
+    );
+
+    if delete {
+        let pc = tab.pending_cleanup.take().unwrap();
+        // Only the ticked rows go, and `force` is set per branch from its own
+        // classification: an unmerged branch reaches here only through its own
+        // checkbox, so the tick is the acknowledgement `-D` rides on.
+        let branches: Vec<BranchDelete> = candidates
+            .into_iter()
+            .filter(|b| pc.checked.contains(&b.name))
+            .map(|b| BranchDelete {
+                force: b.unmerged,
+                name: b.name,
+            })
+            .collect();
+        if !branches.is_empty() {
+            jobs.push(Job::DeleteBranches {
+                id: tab.id,
+                branches,
+            });
+        }
+    } else if cancel || closed {
+        tab.pending_cleanup = None;
+    }
+}
+
+/// The Stale Branch Cleanup Flow's candidates: local branches that are stale
+/// (per [`branch_is_stale`]) and not checked out anywhere -- neither HEAD nor
+/// any worktree, main or linked (git refuses to delete a checked-out branch,
+/// and the flow must never even try). Remotes are excluded by definition.
+/// Order follows the branch list.
+fn cleanup_candidates<'a>(
+    branches: &'a [BranchInfo],
+    worktrees: &[WorktreeInfo],
+    now: i64,
+    cutoff_seconds: i64,
+) -> Vec<&'a BranchInfo> {
+    branches
+        .iter()
+        .filter(|b| !b.is_remote && !b.is_head && branch_is_stale(b, now, cutoff_seconds))
+        .filter(|b| !worktrees.iter().any(|w| !w.detached && w.branch == b.name))
+        .collect()
 }
 
 /// The Checkout Flow's warning modal, shown only when a precondition blocks the
@@ -436,10 +674,7 @@ fn confirm_new_branch(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
 fn branches(ui: &mut Ui, tab: &RepoTab, stale_cutoff_seconds: i64) -> Option<BranchAction> {
     let font = TextStyle::Body.resolve(ui.style());
     let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = now();
 
     let nodes = tree::build(tab.branches.iter().map(|b| b.name.as_str()), "");
     let rows = tree::rows(&nodes, &tab.collapsed_folders);
@@ -624,9 +859,69 @@ mod tests {
             is_head: false,
             is_remote: false,
             latest_commit_time,
+            unmerged: false,
             ahead: 0,
             behind: 0,
         }
+    }
+
+    fn named(name: &str, latest_commit_time: i64) -> BranchInfo {
+        BranchInfo {
+            name: name.to_string(),
+            ..branch(Some(latest_commit_time))
+        }
+    }
+
+    fn worktree(branch: &str, detached: bool) -> WorktreeInfo {
+        WorktreeInfo {
+            path: std::path::PathBuf::from(format!("/wt/{branch}")),
+            branch: branch.to_string(),
+            detached,
+            is_main: false,
+            stale: false,
+            locked: false,
+        }
+    }
+
+    #[test]
+    fn cleanup_candidates_are_stale_locals_not_checked_out_anywhere() {
+        let now = 10_000;
+        let cutoff = 1_000;
+        let mut head = named("main", 1);
+        head.is_head = true;
+        let mut remote = named("origin/old", 1);
+        remote.is_remote = true;
+        let mut unmerged = named("old-unmerged", 2);
+        unmerged.unmerged = true;
+        let branches = vec![
+            head,
+            named("fresh", 9_500),
+            named("old-merged", 3),
+            unmerged,
+            named("old-in-worktree", 4),
+            named("old-at-detached-worktree-id", 5),
+            remote,
+        ];
+        let worktrees = vec![
+            worktree("main", false),
+            worktree("old-in-worktree", false),
+            // A detached worktree's label is a commit id, not a branch claim.
+            worktree("old-at-detached-worktree-id", true),
+        ];
+        let names: Vec<&str> = cleanup_candidates(&branches, &worktrees, now, cutoff)
+            .iter()
+            .map(|b| b.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["old-merged", "old-unmerged", "old-at-detached-worktree-id"]
+        );
+        // Unmerged stays visible in the preview; it is the modal that gates it.
+        assert!(
+            cleanup_candidates(&branches, &worktrees, now, cutoff)
+                .iter()
+                .any(|b| b.unmerged)
+        );
     }
 
     #[test]

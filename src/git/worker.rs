@@ -361,6 +361,17 @@ fn run_job(
                 result: ops::worktree_prune(workdir),
             })
         }
+        Job::DeleteBranches { id, branches } => {
+            // Local CLI op, run in the queue like the worktree ops. Partial
+            // success is expected, hence the dedicated reply.
+            let (_, workdir) = repos.get(&id)?;
+            let (deleted, failed) = ops::delete_branches(workdir, &branches);
+            Some(Update::BranchesDeleted {
+                id,
+                deleted,
+                failed,
+            })
+        }
         Job::Integrate {
             id,
             strategy,

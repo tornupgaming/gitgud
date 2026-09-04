@@ -35,6 +35,14 @@ A local or remote branch whose latest commit is older than the user's configured
 
 Distinct from a **stale worktree**, which is missing from disk.
 
+### Stale Branch Cleanup Flow
+
+Deleting stale local branches from a preview. The preview lists every stale local branch that is neither the checked-out branch nor checked out in any worktree; remote branches and remote-tracking references are never candidates and never touched. Opening the preview changes nothing; only confirming deletes, and only the ticked branches. An **unmerged** branch (its tip is reachable from neither HEAD nor its own upstream, so deleting it loses commits) is listed but starts unticked, and ticking it is that one branch's acknowledgement — never another's. A branch git refuses to delete stays in the list with git's reason beside it.
+
+#### Synonyms
+
+Cleanup. *Avoid:* prune (reserved for `git worktree prune` and remote pruning).
+
 ### Worktree
 
 A checkout of the repository with its own directory: the original clone is the **main worktree**, additional checkouts created via `git worktree add` are **linked worktrees**, and a linked worktree whose directory no longer exists on disk (but which git still lists) is **stale**. A branch can be checked out in at most one worktree at a time. The bare word "worktree" always means this concept — never the staged/unstaged panel (see Working tree).
