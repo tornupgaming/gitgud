@@ -9,7 +9,9 @@ use eframe::egui::{
 };
 
 use super::{HudButton, module, submodules, tree, vscroll};
-use crate::app::{NewBranch, PendingCleanup, PendingMerge, RepoTab, StaleBranchSettings};
+use crate::app::{
+    NewBranch, PendingBranchDelete, PendingCleanup, PendingMerge, RepoTab, StaleBranchSettings,
+};
 use crate::git::{BranchDelete, BranchInfo, Job, MergeDirection, WorktreeInfo};
 use crate::theme::{self, ACCENT, AMBER, BG3, DIM, GREEN, PURPLE, RED, TEXT};
 
@@ -32,6 +34,11 @@ enum BranchAction {
     ToggleFolder(String),
     /// Open the Stale Branch Cleanup Flow's preview (the header's CLEAN UP).
     Cleanup,
+    /// Arm the Branch Delete Flow for the row's local and/or remote branch.
+    Delete {
+        local: Option<String>,
+        remote: Option<String>,
+    },
 }
 
 /// The BRANCHES module plus its flow modals. A double-click runs the Checkout
@@ -65,6 +72,7 @@ pub fn show(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, settings: Stale
     merge_flow_modal(ui, tab, jobs);
     confirm_new_branch(ui, tab, jobs);
     cleanup_modal(ui, tab, jobs, settings);
+    delete_branch_modal(ui, tab, jobs);
 }
 
 /// Seconds since the epoch, the `now` every stale test compares against.
@@ -109,6 +117,9 @@ fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cu
         }
     });
     match action {
+        // A branch mid-deletion is not a destination; the row already
+        // refuses the double-click, this is the belt to that brace.
+        Some(BranchAction::Checkout(name)) if tab.deleting.contains(&name) => {}
         Some(BranchAction::Checkout(name)) => {
             tab.merge_return = None;
             // Checkout Flow: a clean tree switches at once; a precondition
@@ -145,6 +156,9 @@ fn branches_module(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>, stale_cu
             } else {
                 tab.collapsed_folders.insert(path);
             }
+        }
+        Some(BranchAction::Delete { local, remote }) => {
+            tab.pending_branch_delete = Some(PendingBranchDelete { local, remote });
         }
         Some(BranchAction::Cleanup) => {
             // Arming only opens the preview: merged candidates start checked,
@@ -675,6 +689,7 @@ fn branches(ui: &mut Ui, tab: &RepoTab, stale_cutoff_seconds: i64) -> Option<Bra
     let font = TextStyle::Body.resolve(ui.style());
     let row_h = ui.text_style_height(&TextStyle::Body) + 6.0;
     let now = now();
+    let head_upstream = head_upstream(tab);
 
     let nodes = tree::build(tab.branches.iter().map(|b| b.name.as_str()), "");
     let rows = tree::rows(&nodes, &tab.collapsed_folders);
@@ -721,15 +736,19 @@ fn branches(ui: &mut Ui, tab: &RepoTab, stale_cutoff_seconds: i64) -> Option<Bra
                 // The folder chain carries the prefix, so a leaf shows only its
                 // final segment.
                 let leaf = b.name.rsplit('/').next().unwrap_or(&b.name);
+                // A row the Branch Delete Flow is deleting right now: dimmed,
+                // struck through, and inert until the reply lands.
+                let deleting = tab.deleting.contains(&b.name);
+                let label_rect;
                 if b.is_remote {
-                    let color = if stale { DIM } else { PURPLE };
+                    let color = if stale || deleting { DIM } else { PURPLE };
                     // Hollow node marker, painted: Rajdhani has no ◦ glyph.
                     p.circle_stroke(
                         pos2(rect.left() + 9.0 + indent, y),
                         3.0,
                         Stroke::new(1.0_f32, color),
                     );
-                    p.text(
+                    label_rect = p.text(
                         pos2(rect.left() + 20.0 + indent, y),
                         Align2::LEFT_CENTER,
                         leaf,
@@ -746,14 +765,14 @@ fn branches(ui: &mut Ui, tab: &RepoTab, stale_cutoff_seconds: i64) -> Option<Bra
                             AMBER,
                         );
                     }
-                    p.text(
+                    label_rect = p.text(
                         pos2(rect.left() + 20.0 + indent, y),
                         Align2::LEFT_CENTER,
                         leaf,
                         font.clone(),
                         if b.is_head {
                             AMBER
-                        } else if stale {
+                        } else if stale || deleting {
                             DIM
                         } else {
                             TEXT
@@ -799,6 +818,13 @@ fn branches(ui: &mut Ui, tab: &RepoTab, stale_cutoff_seconds: i64) -> Option<Bra
                         DIM,
                     );
                 }
+                if deleting {
+                    p.line_segment(
+                        [pos2(label_rect.left(), y), pos2(label_rect.right(), y)],
+                        Stroke::new(1.0_f32, RED),
+                    );
+                    continue;
+                }
                 if resp.double_clicked() && !b.is_head {
                     action = Some(BranchAction::Checkout(b.name.clone()));
                 }
@@ -839,11 +865,227 @@ fn branches(ui: &mut Ui, tab: &RepoTab, stale_cutoff_seconds: i64) -> Option<Bra
                         action = Some(BranchAction::NewWorktree(b.name.clone()));
                         ui.close();
                     }
+                    // Branch Delete Flow. Only for a branch nobody stands on:
+                    // not HEAD, not checked out in a worktree, and for a
+                    // remote not the current branch's upstream. The second
+                    // entry needs a counterpart on the other side that passes
+                    // the same test.
+                    if let Some((local, remote)) = delete_sides(tab, b, head_upstream.as_deref()) {
+                        ui.separator();
+                        let (one, both) = if b.is_remote {
+                            ("Delete remote branch", "Delete remote & local")
+                        } else {
+                            ("Delete branch", "Delete local & remote")
+                        };
+                        if ui.button(one).clicked() {
+                            action = Some(if b.is_remote {
+                                BranchAction::Delete {
+                                    local: None,
+                                    remote: remote.clone(),
+                                }
+                            } else {
+                                BranchAction::Delete {
+                                    local: local.clone(),
+                                    remote: None,
+                                }
+                            });
+                            ui.close();
+                        }
+                        if local.is_some() && remote.is_some() && ui.button(both).clicked() {
+                            action = Some(BranchAction::Delete { local, remote });
+                            ui.close();
+                        }
+                    }
                 });
             }
         }
     }
     action
+}
+
+/// The remote-tracking name (`origin/main`) the checked-out branch pushes to,
+/// if any. Deleting that remote branch would pull the rug from under HEAD's
+/// own push/pull, so the flow treats it like HEAD itself.
+fn head_upstream(tab: &RepoTab) -> Option<String> {
+    tab.branches
+        .iter()
+        .find(|b| b.is_head)
+        .and_then(|b| b.upstream.clone())
+}
+
+/// Whether a local branch may be deleted: nobody is on it -- neither HEAD nor
+/// any worktree -- and it is not already going.
+fn local_deletable(tab: &RepoTab, b: &BranchInfo) -> bool {
+    !b.is_remote
+        && !b.is_head
+        && !tab.deleting.contains(&b.name)
+        && super::worktrees::branch_is_free(tab, &b.name)
+}
+
+/// Whether a remote branch may be deleted: git can address it (a configured
+/// remote owns the ref), it is not the current branch's upstream, and it is
+/// not already going.
+fn remote_deletable(tab: &RepoTab, b: &BranchInfo, head_upstream: Option<&str>) -> bool {
+    b.is_remote
+        && b.remote.is_some()
+        && head_upstream != Some(b.name.as_str())
+        && !tab.deleting.contains(&b.name)
+}
+
+/// What the Branch Delete Flow may delete from this row: `(local, remote)`
+/// names with the row's own side always present and its counterpart (the
+/// local's upstream, or the local tracking this remote) when one exists and
+/// passes the same test. `None` when the row itself cannot be deleted.
+fn delete_sides(
+    tab: &RepoTab,
+    b: &BranchInfo,
+    head_upstream: Option<&str>,
+) -> Option<(Option<String>, Option<String>)> {
+    if b.is_remote {
+        if !remote_deletable(tab, b, head_upstream) {
+            return None;
+        }
+        let local = tab
+            .branches
+            .iter()
+            .find(|l| !l.is_remote && l.upstream.as_deref() == Some(b.name.as_str()))
+            .filter(|l| local_deletable(tab, l))
+            .map(|l| l.name.clone());
+        Some((local, Some(b.name.clone())))
+    } else {
+        if !local_deletable(tab, b) {
+            return None;
+        }
+        let remote = b
+            .upstream
+            .as_deref()
+            .and_then(|u| tab.branches.iter().find(|r| r.is_remote && r.name == u))
+            .filter(|r| remote_deletable(tab, r, head_upstream))
+            .map(|r| r.name.clone());
+        Some((Some(b.name.clone()), remote))
+    }
+}
+
+/// The Branch Delete Flow's confirm modal: each side to be deleted, the
+/// unmerged warning when the local branch holds commits nothing else reaches,
+/// and a note that the remote side is a push. Each frame re-checks both sides
+/// against the live snapshot -- a background refresh may have moved HEAD onto
+/// the branch or dropped it -- and DELETE stays disabled with the reason while
+/// that holds. Confirming marks the rows as deleting and fires the job;
+/// Cancel, Escape, or a backdrop click changes nothing.
+fn delete_branch_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
+    let t = super::factor(
+        ui.ctx(),
+        Id::new("delete_branch"),
+        tab.pending_branch_delete.is_some(),
+    );
+    let Some(pending) = tab.pending_branch_delete.clone() else {
+        return;
+    };
+    let head_upstream = head_upstream(tab);
+    // Live re-validation: the armed snapshot must still be deletable now.
+    let local = pending
+        .local
+        .as_ref()
+        .and_then(|l| tab.branches.iter().find(|b| &b.name == l && !b.is_remote));
+    let remote = pending
+        .remote
+        .as_ref()
+        .and_then(|r| tab.branches.iter().find(|b| &b.name == r && b.is_remote));
+    let blocker: Option<&str> = match (&pending.local, local, &pending.remote, remote) {
+        (Some(_), None, _, _) => Some("the local branch no longer exists"),
+        (_, _, Some(_), None) => Some("the remote branch no longer exists"),
+        (_, Some(l), _, _) if l.is_head => Some("the branch is checked out"),
+        (_, Some(l), _, _) if !local_deletable(tab, l) => {
+            Some("the branch is checked out in a worktree")
+        }
+        (_, _, _, Some(r)) if !remote_deletable(tab, r, head_upstream.as_deref()) => {
+            Some("the remote branch is the current branch's upstream")
+        }
+        _ => None,
+    };
+    let unmerged = local.is_some_and(|l| l.unmerged);
+
+    let ((delete, cancel), closed) =
+        super::hud_modal(ui, "delete_branch", "DELETE BRANCH", RED, 420.0, t, |ui| {
+            ui.label("This deletes:");
+            ui.add_space(4.0);
+            if let Some(l) = &pending.local {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("LOCAL").small().color(DIM));
+                    ui.add(Label::new(RichText::new(l).color(TEXT)).truncate());
+                    if unmerged {
+                        ui.label(RichText::new("UNMERGED").small().color(AMBER));
+                    }
+                });
+            }
+            if let Some(r) = &pending.remote {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("REMOTE").small().color(DIM));
+                    ui.add(Label::new(RichText::new(r).color(PURPLE)).truncate());
+                });
+            }
+            if unmerged {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "⚠ The local branch holds commits nothing else reaches; \
+                         deleting it loses them.",
+                    )
+                    .small()
+                    .color(AMBER),
+                );
+            }
+            if pending.remote.is_some() {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("The remote branch is deleted with a push to the remote.")
+                        .small()
+                        .color(DIM),
+                );
+            }
+            if let Some(why) = blocker {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!("✕ Cannot delete: {why}."))
+                        .small()
+                        .color(RED),
+                );
+            }
+            ui.add_space(14.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let label = if unmerged { "FORCE DELETE" } else { "DELETE" };
+                let delete = ui
+                    .add_enabled(blocker.is_none(), HudButton::new(label).text_color(RED))
+                    .clicked();
+                let cancel = ui.add(HudButton::new("CANCEL")).clicked();
+                (delete, cancel)
+            })
+            .inner
+        });
+
+    if delete && blocker.is_none() {
+        let local_job = local.map(|l| BranchDelete {
+            name: l.name.clone(),
+            // Confirming an UNMERGED branch is the acknowledgement `-D` needs.
+            force: l.unmerged,
+        });
+        let remote_job = remote.and_then(|r| r.remote.clone());
+        let names: Vec<String> = local
+            .iter()
+            .chain(remote.iter())
+            .map(|b| b.name.clone())
+            .collect();
+        tab.deleting.extend(names);
+        jobs.push(Job::DeleteBranch {
+            id: tab.id,
+            local: local_job,
+            remote: remote_job,
+        });
+        tab.pending_branch_delete = None;
+    } else if cancel || closed {
+        tab.pending_branch_delete = None;
+    }
 }
 
 /// Strict boundary rule from issue #6: a branch is stale only when its tip is
@@ -869,6 +1111,8 @@ mod tests {
             unmerged: false,
             ahead: 0,
             behind: 0,
+            upstream: None,
+            remote: None,
         }
     }
 

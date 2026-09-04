@@ -22,8 +22,8 @@ use git2::{
 use super::{
     BranchDelete, BranchInfo, ChangeKind, CommitInfo, ConflictFile, ConflictSegment, DiffData,
     DiffKey, DiffLine, FileChange, FileDiff, HistoryPage, LineKind, MergeDirection, MergeInfo,
-    ProgressEvent, RefreshData, RepoMeta, Resolution, StepState, SubmoduleInfo, SyncStrategy,
-    WorktreeInfo,
+    ProgressEvent, RefreshData, RemoteBranch, RepoMeta, Resolution, StepState, SubmoduleInfo,
+    SyncStrategy, WorktreeInfo,
 };
 
 /// A sink for live progress from a long-running op. The worker hands each
@@ -90,6 +90,7 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
                 .peel_to_commit()
                 .ok()
                 .map(|commit| commit.time().seconds());
+            let remote = remote_branch(repo, branch.get().name().ok(), &name);
             remotes.push(BranchInfo {
                 name,
                 is_head: false,
@@ -98,11 +99,17 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
                 unmerged: false,
                 ahead: 0,
                 behind: 0,
+                upstream: None,
+                remote,
             });
             continue;
         }
         let local_oid = branch.get().target();
-        let upstream_oid = branch.upstream().ok().and_then(|u| u.get().target());
+        let upstream_branch = branch.upstream().ok();
+        let upstream_oid = upstream_branch.as_ref().and_then(|u| u.get().target());
+        let upstream = upstream_branch
+            .as_ref()
+            .and_then(|u| u.name().ok().flatten().map(str::to_string));
         let (ahead, behind) = match (local_oid, upstream_oid) {
             (Some(local_oid), Some(up_oid)) => {
                 repo.graph_ahead_behind(local_oid, up_oid).map_err(g)?
@@ -127,6 +134,8 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
             unmerged,
             ahead,
             behind,
+            upstream,
+            remote: None,
         });
     }
     locals.sort_by(|a, b| a.name.cmp(&b.name));
@@ -288,6 +297,58 @@ pub fn delete_branches(
         }
     }
     (deleted, failed)
+}
+
+/// Splits a remote-tracking branch (`refs/remotes/origin/feature`, shown as
+/// `origin/feature`) into the remote and the branch's name on it, asking git
+/// which configured remote owns the ref rather than cutting at the first `/`
+/// (a remote's name may itself contain one). `None` when no remote claims it.
+fn remote_branch(repo: &Repository, refname: Option<&str>, shown: &str) -> Option<RemoteBranch> {
+    let remote = repo.branch_remote_name(refname?).ok()?;
+    let remote = std::str::from_utf8(&remote).ok()?.to_string();
+    let branch = shown.strip_prefix(&format!("{remote}/"))?.to_string();
+    Some(RemoteBranch { remote, branch })
+}
+
+/// The Branch Delete Flow's confirm action: deletes a branch on the remote
+/// (`git push <remote> --delete <branch>`) and/or locally (`git branch -d`,
+/// `-D` only with the user's unmerged acknowledgement). The remote goes first:
+/// a push that fails (offline, rejected) leaves the local branch untouched, so
+/// nothing is lost and the user simply retries. A local refusal after a
+/// successful remote delete is reported as such -- the remote side is gone
+/// either way, which is why the caller refreshes even on `Err`.
+pub fn delete_branch(
+    workdir: &Path,
+    local: Option<&BranchDelete>,
+    remote: Option<&RemoteBranch>,
+) -> Result<String, String> {
+    let mut done = Vec::new();
+    if let Some(r) = remote {
+        // Both names come from the repo; the leading-`-` rejection is the
+        // invariant every CLI-bound name goes through, and `--` ends the
+        // option list so neither can be read as a flag.
+        let remote_name = cli_arg(&r.remote, "remote name")?;
+        let branch = cli_arg(&r.branch, "branch name")?;
+        run_git(
+            workdir,
+            &["push", "--delete", "--", remote_name, branch],
+            "git push --delete failed",
+        )
+        .map_err(|e| format!("could not delete {}/{}: {e}", r.remote, r.branch))?;
+        done.push(format!("{}/{}", r.remote, r.branch));
+    }
+    if let Some(b) = local {
+        let (deleted, failed) = delete_branches(workdir, std::slice::from_ref(b));
+        if let Some((name, reason)) = failed.first() {
+            let so_far = match done.first() {
+                Some(r) => format!("deleted {r}; "),
+                None => String::new(),
+            };
+            return Err(format!("{so_far}could not delete {name}: {reason}"));
+        }
+        done.extend(deleted);
+    }
+    Ok(format!("deleted {}", done.join(" and ")))
 }
 
 fn worktree_list(workdir: &Path) -> Vec<WorktreeInfo> {
@@ -2324,6 +2385,95 @@ mod tests {
         assert!(failed.is_empty());
         assert!(repo.find_branch("topic", BranchType::Local).is_err());
 
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A repo with a bare `origin` holding `main` and `feat`, `feat` tracking
+    /// `origin/feat`, HEAD on `main` tracking `origin/main`.
+    fn repo_with_remote(name: &str) -> (std::path::PathBuf, std::path::PathBuf, Repository) {
+        let (dir, repo) = temp_repo(name);
+        let bare = dir.join("origin.git");
+        Repository::init_bare(&bare).unwrap();
+        fs::write(dir.join("f.txt"), "base\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("f.txt")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "base", &tree, &[])
+            .unwrap();
+        let commit = repo.find_commit(oid).unwrap();
+        repo.branch("feat", &commit, false).unwrap();
+        drop(commit);
+        drop(tree);
+        let head = repo.head().unwrap().shorthand().unwrap().to_string();
+        let git = |args: &[&str]| run_git(&dir, args, "").unwrap();
+        git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        git(&["push", "-u", "origin", &head, "feat"]);
+        git(&["branch", "--set-upstream-to", "origin/feat", "feat"]);
+        (dir, bare, repo)
+    }
+
+    #[test]
+    fn refresh_links_locals_to_upstreams_and_remotes_to_their_remote() {
+        let (dir, _bare, repo) = repo_with_remote("remote_link");
+        let data = refresh(&repo).unwrap();
+        let feat = data.branches.iter().find(|b| b.name == "feat").unwrap();
+        assert_eq!(feat.upstream.as_deref(), Some("origin/feat"));
+        assert!(feat.remote.is_none());
+        let remote = data
+            .branches
+            .iter()
+            .find(|b| b.name == "origin/feat")
+            .unwrap();
+        assert!(remote.upstream.is_none());
+        assert_eq!(
+            remote.remote,
+            Some(RemoteBranch {
+                remote: "origin".to_string(),
+                branch: "feat".to_string(),
+            })
+        );
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_branch_removes_remote_then_local_and_keeps_local_on_remote_failure() {
+        let (dir, bare, repo) = repo_with_remote("delete_remote");
+        let local = BranchDelete {
+            name: "feat".to_string(),
+            force: false,
+        };
+        // A remote that refuses (nonexistent branch) leaves the local alone.
+        let bogus = RemoteBranch {
+            remote: "origin".to_string(),
+            branch: "nope".to_string(),
+        };
+        let err = delete_branch(&dir, Some(&local), Some(&bogus)).unwrap_err();
+        assert!(err.contains("origin/nope"), "{err}");
+        assert!(repo.find_branch("feat", BranchType::Local).is_ok());
+        // Flag-shaped names never reach git.
+        let flag = RemoteBranch {
+            remote: "origin".to_string(),
+            branch: "--all".to_string(),
+        };
+        assert!(delete_branch(&dir, None, Some(&flag)).is_err());
+
+        // Both sides: the branch vanishes on the remote, its tracking ref
+        // goes with it, and the local follows.
+        let remote = RemoteBranch {
+            remote: "origin".to_string(),
+            branch: "feat".to_string(),
+        };
+        let msg = delete_branch(&dir, Some(&local), Some(&remote)).unwrap();
+        assert!(msg.contains("origin/feat") && msg.contains("feat"), "{msg}");
+        assert!(repo.find_branch("feat", BranchType::Local).is_err());
+        assert!(repo.find_branch("origin/feat", BranchType::Remote).is_err());
+        let origin = Repository::open_bare(&bare).unwrap();
+        assert!(origin.find_branch("feat", BranchType::Local).is_err());
+        drop(origin);
         drop(repo);
         let _ = fs::remove_dir_all(&dir);
     }

@@ -43,6 +43,14 @@ Deleting stale local branches from a preview. The preview lists every stale loca
 
 Cleanup. *Avoid:* prune (reserved for `git worktree prune` and remote pruning).
 
+### Branch Delete Flow
+
+Deleting one branch from its row in the branch list, on one side or both. A local row offers **Delete branch** (the local) and, when it has an upstream, **Delete local & remote**; a remote row offers **Delete remote branch** and, when a local tracks it, **Delete remote & local**. Only a branch nobody stands on qualifies: not the checked-out branch, not checked out in any worktree, and for a remote branch not the checked-out branch's upstream. The entries only arm a confirmation that names each side and, for a local branch, its **unmerged** warning; confirming is that branch's acknowledgement. The remote side is a push (`git push <remote> --delete <branch>`) and goes first, so a failed push leaves the local branch intact. While the deletion runs its rows are **deleting**: struck through and inert, so they cannot be checked out or acted on until the reply arrives.
+
+#### Synonyms
+
+*Avoid:* remove (reserved for worktrees), prune.
+
 ### Worktree
 
 A checkout of the repository with its own directory: the original clone is the **main worktree**, additional checkouts created via `git worktree add` are **linked worktrees**, and a linked worktree whose directory no longer exists on disk (but which git still lists) is **stale**. A branch can be checked out in at most one worktree at a time. The bare word "worktree" always means this concept — never the staged/unstaged panel (see Working tree).

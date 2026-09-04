@@ -372,6 +372,29 @@ fn run_job(
                 failed,
             })
         }
+        Job::DeleteBranch { id, local, remote } => {
+            let (_, workdir) = repos.get(&id)?;
+            let reply = move |result| Update::Acted {
+                id,
+                kind: ActionKind::DeleteBranch,
+                result,
+            };
+            if remote.is_none() {
+                // Local only: a plain CLI op, run in the queue.
+                return Some(reply(ops::delete_branch(workdir, local.as_ref(), None)));
+            }
+            // A remote delete is a push: network, so its own thread keeps
+            // local jobs from queueing behind it.
+            let workdir = workdir.clone();
+            let tx = upd_tx.clone();
+            let ctx = egui_ctx.clone();
+            std::thread::spawn(move || {
+                let result = ops::delete_branch(&workdir, local.as_ref(), remote.as_ref());
+                let _ = tx.send(reply(result));
+                ctx.request_repaint();
+            });
+            None
+        }
         Job::Integrate {
             id,
             strategy,

@@ -193,6 +193,27 @@ pub enum Job {
         id: RepoId,
         branches: Vec<BranchDelete>,
     },
+    /// The Branch Delete Flow's confirm action: delete one branch on the
+    /// chosen sides. `local` is `git branch -d`/`-D` as in
+    /// [`Job::DeleteBranches`]; `remote` is `git push <remote> --delete
+    /// <branch>` -- a network op, run off-thread like a push. When both are
+    /// given the remote goes first so a failed push leaves the local branch
+    /// (and its commits) untouched. Replies [`Update::Acted`] with
+    /// [`ActionKind::DeleteBranch`].
+    DeleteBranch {
+        id: RepoId,
+        local: Option<BranchDelete>,
+        remote: Option<RemoteBranch>,
+    },
+}
+
+/// A branch on a remote, addressed the way `git push` wants it: the remote's
+/// name and the branch's name there (`origin` + `feature`, never the
+/// remote-tracking form `origin/feature`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBranch {
+    pub remote: String,
+    pub branch: String,
 }
 
 /// One local branch to delete. `force` is the user's per-branch
@@ -387,6 +408,7 @@ pub enum ActionKind {
     WorktreeAdd,
     WorktreeRemove,
     WorktreePrune,
+    DeleteBranch,
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +506,14 @@ pub struct BranchInfo {
     /// Commits ahead/behind the upstream branch. Both 0 when no upstream.
     pub ahead: usize,
     pub behind: usize,
+    /// Local branches only: the upstream's remote-tracking name
+    /// (`origin/feature`), i.e. the `name` of the remote row it tracks.
+    /// `None` when no upstream is configured or it no longer exists.
+    pub upstream: Option<String>,
+    /// Remote branches only: where the branch lives, so it can be deleted
+    /// there (`git push` addresses the remote and the branch separately).
+    /// `None` when the remote-tracking ref maps to no configured remote.
+    pub remote: Option<RemoteBranch>,
 }
 
 #[derive(Debug, Clone)]

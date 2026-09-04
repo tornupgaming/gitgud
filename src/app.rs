@@ -168,6 +168,17 @@ impl NewWorktree {
     }
 }
 
+/// A Branch Delete Flow awaiting confirmation: the local branch and/or the
+/// remote branch (`origin/feature`) the context menu named. Names only: the
+/// modal looks both up in the live snapshot each frame and re-checks them
+/// before it lets DELETE fire (a background refresh may have moved HEAD onto
+/// one of them, or dropped it).
+#[derive(Clone)]
+pub struct PendingBranchDelete {
+    pub local: Option<String>,
+    pub remote: Option<String>,
+}
+
 /// A worktree removal awaiting confirmation (the Worktree Remove Flow).
 /// `dirty` escalates the modal to Discard & remove after git refused the
 /// unforced attempt ([`Update::WorktreeDirty`]).
@@ -289,6 +300,13 @@ pub struct RepoTab {
     /// Stale Branch Cleanup Flow preview awaiting confirm. Opening it has no
     /// side effects; `Job::DeleteBranches` fires only from its DELETE button.
     pub pending_cleanup: Option<PendingCleanup>,
+    /// Branch Delete Flow confirmation; `Job::DeleteBranch` fires only from
+    /// its DELETE button.
+    pub pending_branch_delete: Option<PendingBranchDelete>,
+    /// Branch rows (`feature`, `origin/feature`) a `Job::DeleteBranch` is
+    /// deleting right now. The branch list strikes them through and refuses
+    /// to check them out or open their menu until the reply clears this.
+    pub deleting: HashSet<String>,
     /// Confirmed removal `(path, force)` to dispatch after layout: the
     /// target's tab (if open) must be closed first so the worker drops its
     /// repo handle before the delete, and that needs `&mut self`.
@@ -364,6 +382,8 @@ impl RepoTab {
             pending_worktree_add: None,
             pending_worktree_remove: None,
             pending_cleanup: None,
+            pending_branch_delete: None,
+            deleting: HashSet::new(),
             worktree_remove_go: None,
             opening_worktree: None,
             in_flight: 0,
@@ -909,6 +929,12 @@ impl GitGudApp {
                     } else {
                         None
                     };
+                    if kind == ActionKind::DeleteBranch {
+                        // Win or lose, the rows are no longer in flight; a
+                        // partial failure (remote gone, local refused) shows
+                        // in the message and the refresh below.
+                        t.deleting.clear();
+                    }
                     match result {
                         Ok(msg) => {
                             t.log = Some((false, msg));
@@ -942,7 +968,9 @@ impl GitGudApp {
                         discard: false,
                     });
                 }
-                if ok {
+                // A branch delete refreshes even on failure: the remote side
+                // may have gone before the local refusal.
+                if ok || kind == ActionKind::DeleteBranch {
                     self.send(Job::Refresh { id });
                     // Push moves the remote-tracking ref, so history decorations
                     // and ahead/behind counts both need recomputing. A clean
@@ -959,6 +987,7 @@ impl GitGudApp {
                             | ActionKind::Push
                             | ActionKind::Pull
                             | ActionKind::WorktreeAdd
+                            | ActionKind::DeleteBranch
                     ) {
                         self.send(Job::LoadHistory { id, skip: 0 });
                     }
@@ -1094,7 +1123,8 @@ fn job_id(job: &Job) -> RepoId {
         | Job::WorktreeAdd { id, .. }
         | Job::WorktreeRemove { id, .. }
         | Job::WorktreePrune { id }
-        | Job::DeleteBranches { id, .. } => *id,
+        | Job::DeleteBranches { id, .. }
+        | Job::DeleteBranch { id, .. } => *id,
     }
 }
 
@@ -1286,6 +1316,7 @@ impl eframe::App for GitGudApp {
                 && t.pending_worktree_add.is_none()
                 && t.pending_worktree_remove.is_none()
                 && t.pending_cleanup.is_none()
+                && t.pending_branch_delete.is_none()
                 && t.net_ops.is_empty()
                 && !t.pending_abort_merge
             {
