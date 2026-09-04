@@ -47,6 +47,10 @@ Cleanup. *Avoid:* prune (reserved for `git worktree prune` and remote pruning).
 
 Deleting one branch from its row in the branch list, on one side or both. A local row offers **Delete branch** (the local) and, when it has an upstream, **Delete local & remote**; a remote row offers **Delete remote branch** and, when a local tracks it, **Delete remote & local**. Only a branch nobody stands on qualifies: not the checked-out branch, not checked out in any worktree, and for a remote branch not the checked-out branch's upstream. The entries only arm a confirmation that names each side and, for a local branch, its **unmerged** warning; confirming is that branch's acknowledgement. The remote side is a push (`git push <remote> --delete <branch>`) and goes first, so a failed push leaves the local branch intact. While the deletion runs its rows are **deleting**: struck through and inert, so they cannot be checked out or acted on until the reply arrives.
 
+### Applied branch
+
+An **unmerged** local branch whose every branch-only commit has a patch-equivalent commit on HEAD or on the branch's upstream (`git cherry`): its content landed by a squash or rebase merge under different commit ids. The unmerged warning still applies and still needs the acknowledgement — git itself would refuse `-d` — but the UI adds a hint that the warning is about history, not lost work. The check is heuristic (a squash of several commits matches none of them individually) and bounded per refresh, so a branch may be applied without being flagged; a branch is never flagged wrongly.
+
 #### Synonyms
 
 *Avoid:* remove (reserved for worktrees), prune.

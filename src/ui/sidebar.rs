@@ -263,14 +263,29 @@ fn cleanup_modal(
                             let color = if b.unmerged { AMBER } else { TEXT };
                             // The name stays flush-left and truncates against
                             // the room the right-aligned readouts need.
-                            let reserve = if b.unmerged { 140.0 } else { 70.0 };
+                            let reserve = if b.applied {
+                                200.0
+                            } else if b.unmerged {
+                                140.0
+                            } else {
+                                70.0
+                            };
                             ui.scope(|ui| {
                                 ui.set_max_width((ui.available_width() - reserve).max(40.0));
                                 ui.add(Label::new(RichText::new(&b.name).color(color)).truncate());
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if b.unmerged {
-                                    ui.label(RichText::new("UNMERGED").small().color(AMBER));
+                                    let tag =
+                                        ui.label(RichText::new("UNMERGED").small().color(AMBER));
+                                    if b.applied {
+                                        tag.on_hover_text(
+                                            "its changes are already on the current branch or \
+                                             its upstream as different commits (squash or \
+                                             rebase merge): history, not lost work",
+                                        );
+                                        ui.label(RichText::new("APPLIED").small().color(DIM));
+                                    }
                                 }
                                 if let Some(tip) = b.latest_commit_time {
                                     ui.label(
@@ -1005,6 +1020,7 @@ fn delete_branch_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
         _ => None,
     };
     let unmerged = local.is_some_and(|l| l.unmerged);
+    let applied = local.is_some_and(|l| l.applied);
 
     let ((delete, cancel), closed) =
         super::hud_modal(ui, "delete_branch", "DELETE BRANCH", RED, 420.0, t, |ui| {
@@ -1035,6 +1051,17 @@ fn delete_branch_modal(ui: &mut Ui, tab: &mut RepoTab, jobs: &mut Vec<Job>) {
                     .small()
                     .color(AMBER),
                 );
+                if applied {
+                    ui.label(
+                        RichText::new(
+                            "Their changes are already on the current branch or its \
+                             upstream as different commits (a squash or rebase merge), \
+                             so this is about history, not lost work.",
+                        )
+                        .small()
+                        .color(DIM),
+                    );
+                }
             }
             if pending.remote.is_some() {
                 ui.add_space(6.0);
@@ -1109,6 +1136,7 @@ mod tests {
             is_remote: false,
             latest_commit_time,
             unmerged: false,
+            applied: false,
             ahead: 0,
             behind: 0,
             upstream: None,

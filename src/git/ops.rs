@@ -74,6 +74,7 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
 
     let mut locals: Vec<BranchInfo> = Vec::new();
     let mut remotes: Vec<BranchInfo> = Vec::new();
+    let mut applied_checks = 0usize;
     for entry in repo.branches(None).map_err(g)? {
         let (branch, kind) = entry.map_err(g)?;
         let Some(name) = branch.name().map_err(g)?.map(str::to_string) else {
@@ -97,6 +98,7 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
                 is_remote: true,
                 latest_commit_time,
                 unmerged: false,
+                applied: false,
                 ahead: 0,
                 behind: 0,
                 upstream: None,
@@ -126,12 +128,21 @@ pub fn refresh(repo: &Repository) -> Result<RefreshData, String> {
             .peel_to_commit()
             .ok()
             .map(|commit| commit.time().seconds());
+        // Only an unmerged branch needs the softer test, and only a bounded
+        // number of them per refresh: each is a `git cherry` run.
+        let applied = unmerged
+            && applied_checks < APPLIED_CHECK_CAP
+            && repo.workdir().is_some_and(|wd| {
+                applied_checks += 1;
+                branch_applied(wd, &name, upstream.as_deref())
+            });
         locals.push(BranchInfo {
             name,
             is_head: branch.is_head(),
             is_remote: false,
             latest_commit_time,
             unmerged,
+            applied,
             ahead,
             behind,
             upstream,
@@ -297,6 +308,38 @@ pub fn delete_branches(
         }
     }
     (deleted, failed)
+}
+
+/// Most unmerged branches one refresh will run `git cherry` for. A refresh
+/// follows every action, and the branch list is repo content, so the pass is
+/// bounded like every other pass over untrusted input; branches past the cap
+/// simply report `applied: false`.
+const APPLIED_CHECK_CAP: usize = 32;
+
+/// The softer companion to the unmerged test: does every commit `branch`
+/// alone holds have a patch-equivalent commit on HEAD, or failing that on its
+/// upstream? `git cherry <base> <branch>` prints one line per such commit,
+/// `-` for one whose patch already exists on the base and `+` otherwise; all
+/// `-` means the content landed under other ids (squash or rebase). Empty
+/// output (no unique commits) is not "applied" -- such a branch is not
+/// unmerged in the first place. Any failure reads as not applied: this only
+/// ever softens a warning, never removes one.
+fn branch_applied(workdir: &Path, branch: &str, upstream: Option<&str>) -> bool {
+    let Ok(branch) = cli_arg(branch, "branch name") else {
+        return false;
+    };
+    let all_applied = |base: &str| {
+        run_git(workdir, &["cherry", "--", base, branch], "")
+            .ok()
+            .is_some_and(|(out, _)| {
+                let mut lines = out.lines().filter(|l| !l.trim().is_empty()).peekable();
+                lines.peek().is_some() && lines.all(|l| l.starts_with('-'))
+            })
+    };
+    all_applied("HEAD")
+        || upstream
+            .and_then(|u| cli_arg(u, "upstream").ok())
+            .is_some_and(all_applied)
 }
 
 /// Splits a remote-tracking branch (`refs/remotes/origin/feature`, shown as
@@ -2440,6 +2483,38 @@ mod tests {
     }
 
     #[test]
+    fn refresh_marks_squash_merged_branches_as_applied() {
+        let (dir, repo) = temp_repo("applied");
+        fs::write(dir.join("f.txt"), "base\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("f.txt")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        let base = repo
+            .commit(Some("HEAD"), &sig, &sig, "base", &tree, &[])
+            .unwrap();
+        let base = repo.find_commit(base).unwrap();
+        drop(tree);
+        // `same` carries a change; HEAD gets the identical patch as a fresh
+        // commit (a squash merge). `other` carries a change HEAD never got.
+        repo.branch("same", &base, false).unwrap();
+        repo.branch("other", &base, false).unwrap();
+        commit_on_ref(&repo, "refs/heads/same", &base, Some("one\n"));
+        commit_on_ref(&repo, "refs/heads/other", &base, Some("two\n"));
+        // A different message keeps this a distinct object from `same`'s
+        // tip (same tree, parent, and second would otherwise collide).
+        commit_on_ref_msg(&repo, "HEAD", &base, Some("one\n"), "squash of same");
+        drop(base);
+
+        let data = refresh(&repo).unwrap();
+        let find = |n: &str| data.branches.iter().find(|b| b.name == n).unwrap();
+        assert!(find("same").unmerged && find("same").applied);
+        assert!(find("other").unmerged && !find("other").applied);
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn delete_branch_removes_remote_then_local_and_keeps_local_on_remote_failure() {
         let (dir, bare, repo) = repo_with_remote("delete_remote");
         let local = BranchDelete {
@@ -2754,6 +2829,18 @@ mod tests {
         parent: &git2::Commit<'_>,
         content: Option<&str>,
     ) -> Oid {
+        commit_on_ref_msg(repo, refname, parent, content, "theirs")
+    }
+
+    /// [`commit_on_ref`] with a chosen message, for when two commits must
+    /// carry the same patch without being the same object.
+    fn commit_on_ref_msg(
+        repo: &Repository,
+        refname: &str,
+        parent: &git2::Commit<'_>,
+        content: Option<&str>,
+        message: &str,
+    ) -> Oid {
         let mut tb = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
         match content {
             Some(c) => {
@@ -2766,7 +2853,7 @@ mod tests {
         }
         let tree = repo.find_tree(tb.write().unwrap()).unwrap();
         let sig = repo.signature().unwrap();
-        repo.commit(Some(refname), &sig, &sig, "theirs", &tree, &[parent])
+        repo.commit(Some(refname), &sig, &sig, message, &tree, &[parent])
             .unwrap()
     }
 

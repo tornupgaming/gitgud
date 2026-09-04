@@ -503,6 +503,14 @@ pub struct BranchInfo {
     /// branch's own upstream, so deleting it would lose commits -- the same
     /// test `git branch -d` applies before refusing. Always false for remotes.
     pub unmerged: bool,
+    /// Local branches only, and only meaningful with `unmerged`: every commit
+    /// the branch alone holds has a patch-equivalent commit on HEAD or on the
+    /// branch's upstream (`git cherry`), i.e. its content landed by squash or
+    /// rebase under different commit ids. The unmerged warning then concerns
+    /// history, not lost work; the UI says so but still requires the
+    /// acknowledgement. False when the check was skipped (see
+    /// `APPLIED_CHECK_CAP`) or inconclusive.
+    pub applied: bool,
     /// Commits ahead/behind the upstream branch. Both 0 when no upstream.
     pub ahead: usize,
     pub behind: usize,
