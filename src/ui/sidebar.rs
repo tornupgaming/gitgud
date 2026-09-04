@@ -805,6 +805,13 @@ fn branches(ui: &mut Ui, tab: &RepoTab, stale_cutoff_seconds: i64) -> Option<Bra
                 // A branch's tip is a valid start point -- branch by name, which
                 // revparse resolves for both local and remote branches.
                 super::hud_menu(&resp, |ui| {
+                    // Pure UI: the name is already in the snapshot, so this
+                    // never crosses to the worker. Remote branches copy their
+                    // full `origin/x` name, matching what the row shows.
+                    if ui.button("Copy branch name").clicked() {
+                        ui.ctx().copy_text(b.name.clone());
+                        ui.close();
+                    }
                     if ui.button("Create branch from here").clicked() {
                         action = Some(BranchAction::CreateFrom {
                             start_point: b.name.clone(),
