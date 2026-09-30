@@ -41,10 +41,11 @@ git config core.hooksPath .githooks
 
 ## Architecture
 
-Two threads, message passing, no locks:
+Background workers, message passing, no locks:
 
 - The **UI thread** (`src/app.rs`, `src/ui/`) never touches `git2::Repository`. It sends `Job` values to the worker and drains `Update` replies once per frame.
 - The **worker thread** (`src/git/worker.rs`) owns all repository handles and executes jobs sequentially. Network jobs get a throwaway thread each and shell out to the git CLI.
+- The **diff preparation thread** (`src/ui/diff.rs`) highlights and flattens diff replies while repository jobs continue. Commit file selections share the prepared rows.
 - The **contract** (`src/git/mod.rs`) is plain owned data — every `Job` except `Close` produces exactly one `Update`.
 - **Operations** (`src/git/ops.rs`) are pure functions `Repository -> data`, called only from the worker.
 
@@ -54,7 +55,7 @@ State on disk: the open-repo list at `%APPDATA%\gitgud\repos.txt` and global pre
 
 ## Security model
 
-Opening a repository and running operations in it is treated like running `git` in that repository yourself: repo-local hooks run. Config-based command execution that git would *not* run interactively is blocked — CLI invocations neutralize `ext::` remote URLs and command-valued `core.fsmonitor`, index paths are confined to the worktree, and untrusted file content is size-capped before highlighting. Don't run network operations in repositories you don't trust. See [SECURITY.md](SECURITY.md) for reporting.
+Opening a repository and running operations in it is treated like running `git` in that repository yourself: repo-local hooks run. Config-based command execution that git would *not* run interactively is blocked — CLI invocations neutralize `ext::` remote URLs and command-valued `core.fsmonitor`, index paths are confined to the worktree, and diff collection caps lines, input text (8 MiB), and file count before background highlighting. Don't run network operations in repositories you don't trust. See [SECURITY.md](SECURITY.md) for reporting.
 
 ## License
 

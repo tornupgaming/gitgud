@@ -40,6 +40,11 @@ const CONSOLE_LINE_CAP: usize = 8192;
 /// Stop collecting diff lines past this point so a pathological diff
 /// (generated file, vendored lockfile) cannot freeze the UI thread's render.
 const DIFF_LINE_CAP: usize = 20_000;
+/// Bound retained text too: a line limit alone permits multi-megabyte lines.
+/// Lossy UTF-8 conversion can expand the input by at most three times.
+const DIFF_BYTE_CAP: usize = 8 * 1024 * 1024;
+/// Binary-only diffs produce no lines, so bound file metadata separately.
+const DIFF_FILE_CAP: usize = 20_000;
 
 /// `git2::Error` -> plain `String`, so results cross the thread boundary as
 /// owned data. Used everywhere as `.map_err(g)?`.
@@ -767,6 +772,7 @@ struct DiffState {
     adds: usize,
     dels: usize,
     line_count: usize,
+    byte_count: usize,
     truncated: bool,
 }
 
@@ -822,13 +828,20 @@ fn collect_diff(diff: &git2::Diff<'_>) -> Result<DiffData, String> {
     let state = RefCell::new(DiffState::default());
 
     let mut file_cb = |delta: git2::DiffDelta<'_>, _progress: f32| -> bool {
+        let mut s = state.borrow_mut();
+        if s.files.len() >= DIFF_FILE_CAP {
+            return truncate(&mut s);
+        }
         let path = delta
             .new_file()
             .path()
             .or_else(|| delta.old_file().path())
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        state.borrow_mut().files.push(FileDiff {
+        if !reserve_diff_bytes(&mut s, path.len()) {
+            return false;
+        }
+        s.files.push(FileDiff {
             path,
             adds: 0,
             dels: 0,
@@ -847,6 +860,9 @@ fn collect_diff(diff: &git2::Diff<'_>) -> Result<DiffData, String> {
         let mut s = state.borrow_mut();
         if s.line_count >= DIFF_LINE_CAP {
             return truncate(&mut s);
+        }
+        if !reserve_diff_bytes(&mut s, hunk.header().len()) {
+            return false;
         }
         let text = String::from_utf8_lossy(hunk.header())
             .trim_end_matches(['\n', '\r'])
@@ -876,6 +892,9 @@ fn collect_diff(diff: &git2::Diff<'_>) -> Result<DiffData, String> {
             ' ' => LineKind::Ctx,
             _ => return true, // file/hunk header origins; already handled
         };
+        if !reserve_diff_bytes(&mut s, line.content().len()) {
+            return false;
+        }
         match kind {
             LineKind::Add => s.adds += 1,
             LineKind::Del => s.dels += 1,
@@ -922,6 +941,14 @@ fn collect_diff(diff: &git2::Diff<'_>) -> Result<DiffData, String> {
     }
 }
 
+fn reserve_diff_bytes(s: &mut DiffState, bytes: usize) -> bool {
+    if bytes > DIFF_BYTE_CAP - s.byte_count {
+        return truncate(s);
+    }
+    s.byte_count += bytes;
+    true
+}
+
 fn push_line(s: &mut DiffState, line: DiffLine) {
     s.line_count += 1;
     if let Some(file) = s.files.last_mut() {
@@ -938,7 +965,10 @@ fn truncate(s: &mut DiffState) -> bool {
                 kind: LineKind::Hunk,
                 old_no: 0,
                 new_no: 0,
-                text: format!("… diff truncated at {DIFF_LINE_CAP} lines …"),
+                text: format!(
+                    "… diff truncated (limit: {DIFF_LINE_CAP} lines, {} MiB of text or {DIFF_FILE_CAP} files) …",
+                    DIFF_BYTE_CAP / (1024 * 1024),
+                ),
             });
         }
     }
@@ -3063,6 +3093,61 @@ mod tests {
 
         drop(repo);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_byte_limit_rejects_a_single_oversized_line() {
+        let patch = format!(
+            "diff --git a/large.txt b/large.txt\nnew file mode 100644\n--- /dev/null\n+++ b/large.txt\n@@ -0,0 +1 @@\n+{}\n",
+            "x".repeat(DIFF_BYTE_CAP + 1),
+        );
+        let diff = git2::Diff::from_buffer(patch.as_bytes()).unwrap();
+        let data = collect_diff(&diff).unwrap();
+        assert_eq!(data.adds, 0, "rejected lines must not inflate totals");
+        let lines = &data.files[0].lines;
+        assert!(lines.last().unwrap().text.contains("diff truncated"));
+        assert!(lines.iter().all(|line| line.text.len() < 200));
+    }
+
+    #[test]
+    fn diff_file_limit_bounds_binary_only_diffs() {
+        let patch: String = (0..=DIFF_FILE_CAP).map(|i| format!(
+            "diff --git a/{i}.png b/{i}.png\nindex 1111111..2222222 100644\nBinary files a/{i}.png and b/{i}.png differ\n"
+        )).collect();
+        let diff = git2::Diff::from_buffer(patch.as_bytes()).unwrap();
+        let data = collect_diff(&diff).unwrap();
+        assert_eq!(data.files.len(), DIFF_FILE_CAP);
+        assert!(data.files.iter().all(|f| f.binary));
+        assert!(
+            data.files
+                .last()
+                .unwrap()
+                .lines
+                .last()
+                .unwrap()
+                .text
+                .contains("diff truncated")
+        );
+    }
+
+    #[test]
+    fn diff_byte_limit_is_cumulative_and_truncates_once() {
+        let mut state = DiffState {
+            files: vec![FileDiff {
+                path: "a.txt".into(),
+                adds: 0,
+                dels: 0,
+                binary: false,
+                lines: vec![],
+            }],
+            ..Default::default()
+        };
+        assert!(reserve_diff_bytes(&mut state, DIFF_BYTE_CAP - 1));
+        assert!(reserve_diff_bytes(&mut state, 1));
+        assert!(!reserve_diff_bytes(&mut state, 1));
+        assert!(!reserve_diff_bytes(&mut state, usize::MAX));
+        assert_eq!(state.byte_count, DIFF_BYTE_CAP);
+        assert_eq!(state.files[0].lines.len(), 1);
     }
 
     // ---- submodule gitlink diff synthesis ----

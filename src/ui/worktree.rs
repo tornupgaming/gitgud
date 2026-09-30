@@ -7,10 +7,10 @@ use eframe::egui::{
     Response, RichText, Sense, Spinner, Stroke, StrokeKind, TextEdit, TextStyle, Ui, pos2, vec2,
 };
 
-use super::diff::DiffView;
+use super::diff::PreparedFile;
 use super::{HudButton, module, rel_time, sub_label, tree, truncate_left, vscroll};
 use crate::app::RepoTab;
-use crate::git::{ChangeKind, DiffKey, FileChange, FileDiff, Job};
+use crate::git::{ChangeKind, DiffKey, FileChange, Job};
 use crate::theme::{self, ACCENT, AMBER, BG3, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// Picks the column's mode off the current selection, then runs the discard
@@ -287,8 +287,8 @@ fn commit_detail(ui: &mut Ui, tab: &mut RepoTab, id: &str) {
             }
         }
         if let Some(path) = open {
-            // Built synchronously from the already-loaded commit diff -- no job.
-            tab.diff = DiffView::build_one(tab.commit_diff.as_ref().unwrap(), &path);
+            // Share the already-prepared rows; selecting a file does no parsing.
+            tab.diff = tab.commit_diff.as_ref().unwrap().file_view(&path);
             tab.commit_file = Some(path);
         }
     });
@@ -679,7 +679,7 @@ fn commit_file_row(
     ui: &Ui,
     rect: Rect,
     resp: &Response,
-    f: &FileDiff,
+    f: &PreparedFile,
     label: &str,
     selected: bool,
     row: Option<&tree::Row>,
