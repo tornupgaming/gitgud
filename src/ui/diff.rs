@@ -3,6 +3,9 @@
 //! highlight spans in the same pass -- so the per-frame render is a plain
 //! index walk that `show_rows` can virtualize.
 
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
+
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{
     Align, Align2, CornerRadius, Layout, Rect, Sense, Spinner, Stroke, StrokeKind, TextStyle, Ui,
@@ -12,7 +15,7 @@ use eframe::egui::{
 use super::highlight::{LineHighlighter, Spans};
 use super::{HudButton, char_w, hvscroll, module, text_width, truncate_right};
 use crate::app::RepoTab;
-use crate::git::{DiffData, DiffKey, DiffLine, LineKind};
+use crate::git::{DiffData, DiffKey, DiffLine, LineKind, RepoId};
 use crate::theme::{self, ACCENT, AMBER, BG2, BORDER, BRIGHT, DIM, GREEN, PURPLE, RED, TEXT};
 
 /// Right-aligned digits reserved per line-number gutter column.
@@ -61,15 +64,15 @@ impl DiffView {
             });
             if binary {
                 rows.push(DiffRow::Binary);
-            } else {
-                rows.extend(f.lines.into_iter().map(|l| {
-                    max_chars = max_chars.max(l.text.chars().count());
-                    let spans = (l.kind != LineKind::Hunk)
-                        .then(|| hl.spans(&l.text))
-                        .flatten();
-                    DiffRow::Line(l, spans)
-                }));
             }
+            // A binary file can carry the collector's truncation marker.
+            rows.extend(f.lines.into_iter().map(|l| {
+                max_chars = max_chars.max(l.text.chars().count());
+                let spans = (l.kind != LineKind::Hunk)
+                    .then(|| hl.spans(&l.text))
+                    .flatten();
+                DiffRow::Line(l, spans)
+            }));
         }
         Self {
             adds: data.adds,
@@ -78,16 +81,104 @@ impl DiffView {
             max_chars,
         }
     }
+}
 
-    /// View of one file out of an already-loaded commit diff (the right
-    /// panel's file list). `None` when `path` isn't in `data`.
-    pub fn build_one(data: &DiffData, path: &str) -> Option<Self> {
-        let f = data.files.iter().find(|f| f.path == path)?.clone();
-        Some(Self::build(DiffData {
-            adds: f.adds,
-            dels: f.dels,
-            files: vec![f],
-        }))
+/// A commit file's metadata and shared render rows. Raw line strings are moved
+/// into the view, so selecting a file never copies or re-highlights its content.
+pub struct PreparedFile {
+    pub path: String,
+    pub adds: usize,
+    pub dels: usize,
+    pub view: Arc<DiffView>,
+}
+
+pub struct PreparedDiff {
+    pub files: Vec<PreparedFile>,
+    pub adds: usize,
+    pub dels: usize,
+}
+
+impl PreparedDiff {
+    fn build(data: DiffData) -> Self {
+        let files = data
+            .files
+            .into_iter()
+            .map(|file| {
+                let path = file.path.clone();
+                let adds = file.adds;
+                let dels = file.dels;
+                let view = Arc::new(DiffView::build(DiffData {
+                    files: vec![file],
+                    adds,
+                    dels,
+                }));
+                PreparedFile {
+                    path,
+                    adds,
+                    dels,
+                    view,
+                }
+            })
+            .collect();
+        Self {
+            files,
+            adds: data.adds,
+            dels: data.dels,
+        }
+    }
+
+    pub fn file_view(&self, path: &str) -> Option<Arc<DiffView>> {
+        self.files
+            .iter()
+            .find(|f| f.path == path)
+            .map(|f| Arc::clone(&f.view))
+    }
+}
+
+pub enum PreparedSelection {
+    Workdir(Arc<DiffView>),
+    Commit(PreparedDiff),
+}
+
+pub struct PreparedReply {
+    pub id: RepoId,
+    pub key: DiffKey,
+    pub view: PreparedSelection,
+}
+
+/// One preparation thread for the app, independent of the repository worker.
+/// Syntax loading, parsing and flattening never run during frame layout.
+pub struct DiffWorker {
+    jobs: Sender<(RepoId, DiffKey, DiffData)>,
+    replies: Receiver<PreparedReply>,
+}
+
+impl DiffWorker {
+    pub fn spawn(ctx: eframe::egui::Context) -> Self {
+        let (jobs, rx) = channel::<(RepoId, DiffKey, DiffData)>();
+        let (tx, replies) = channel();
+        std::thread::spawn(move || {
+            while let Ok((id, key, data)) = rx.recv() {
+                let view = if matches!(key, DiffKey::Commit { .. }) {
+                    PreparedSelection::Commit(PreparedDiff::build(data))
+                } else {
+                    PreparedSelection::Workdir(Arc::new(DiffView::build(data)))
+                };
+                if tx.send(PreparedReply { id, key, view }).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+        });
+        Self { jobs, replies }
+    }
+
+    pub fn prepare(&self, id: RepoId, key: DiffKey, data: DiffData) {
+        let _ = self.jobs.send((id, key, data));
+    }
+
+    pub fn poll(&self) -> impl Iterator<Item = PreparedReply> + '_ {
+        self.replies.try_iter()
     }
 }
 
@@ -367,4 +458,97 @@ fn body(ui: &mut Ui, view: &DiffView) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::FileDiff;
+    use std::time::Duration;
+
+    fn sample() -> DiffData {
+        DiffData {
+            adds: 1,
+            dels: 0,
+            files: vec![
+                FileDiff {
+                    path: "a.rs".into(),
+                    adds: 1,
+                    dels: 0,
+                    binary: false,
+                    lines: vec![DiffLine {
+                        kind: LineKind::Add,
+                        old_no: 0,
+                        new_no: 1,
+                        text: "let café = 42;".into(),
+                    }],
+                },
+                FileDiff {
+                    path: "image.png".into(),
+                    adds: 0,
+                    dels: 0,
+                    binary: true,
+                    lines: vec![],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn prepared_commit_moves_text_and_shares_selected_rows() {
+        let data = sample();
+        let original_text = data.files[0].lines[0].text.as_ptr();
+        let prepared = PreparedDiff::build(data);
+        assert_eq!((prepared.adds, prepared.dels), (1, 0));
+        assert_eq!(prepared.files.len(), 2);
+        let first = prepared.file_view("a.rs").unwrap();
+        let second = prepared.file_view("a.rs").unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        let DiffRow::Line(line, Some(spans)) = &first.rows[1] else {
+            panic!("expected highlighted source line");
+        };
+        assert_eq!(line.text.as_ptr(), original_text);
+        assert_eq!(first.max_chars, line.text.chars().count());
+        assert_eq!(spans.last().unwrap().1.end, line.text.len());
+        assert!(matches!(prepared.files[1].view.rows[1], DiffRow::Binary));
+        assert!(prepared.file_view("missing").is_none());
+    }
+
+    #[test]
+    fn binary_truncation_marker_remains_visible() {
+        let mut data = sample();
+        data.files[1].lines.push(DiffLine {
+            kind: LineKind::Hunk,
+            old_no: 0,
+            new_no: 0,
+            text: "… diff truncated …".into(),
+        });
+        let prepared = PreparedDiff::build(data);
+        assert!(matches!(
+            prepared.files[1].view.rows[2],
+            DiffRow::Line(_, None)
+        ));
+    }
+
+    #[test]
+    fn background_preparation_preserves_key_and_all_workdir_files() {
+        let worker = DiffWorker::spawn(eframe::egui::Context::default());
+        let key = DiffKey::Workdir {
+            path: "a.rs".into(),
+            staged: false,
+        };
+        worker.prepare(7, key.clone(), sample());
+        let reply = worker
+            .replies
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(reply.id, 7);
+        assert_eq!(reply.key, key);
+        let PreparedSelection::Workdir(view) = reply.view else {
+            panic!("expected working tree diff");
+        };
+        assert_eq!(view.rows.len(), 4);
+        assert_eq!((view.adds, view.dels), (1, 0));
+        assert!(matches!(view.rows[3], DiffRow::Binary));
+    }
 }

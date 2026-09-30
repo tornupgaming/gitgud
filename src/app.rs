@@ -18,11 +18,15 @@ use notify::Watcher;
 
 use crate::git::worker::GitWorker;
 use crate::git::{
-    ActionKind, BranchInfo, ChangeKind, CommitInfo, DiffData, DiffKey, FileChange, Job, MergeInfo,
+    ActionKind, BranchInfo, ChangeKind, CommitInfo, DiffKey, FileChange, Job, MergeInfo,
     ProgressEvent, RepoId, StepState, SubmoduleInfo, SyncKind, Update, WorktreeInfo, graph::Graph,
 };
 use crate::theme::{self, ACCENT, BG1};
-use crate::ui::{self, TopBarAction, conflict::ConflictView, diff::DiffView};
+use crate::ui::{
+    self, TopBarAction,
+    conflict::ConflictView,
+    diff::{DiffView, DiffWorker, PreparedDiff, PreparedReply, PreparedSelection},
+};
 
 /// Minimum gap between watcher-triggered refreshes. Bursty writers (saves,
 /// builds) collapse into one status scan per window instead of one per event.
@@ -250,10 +254,10 @@ pub struct RepoTab {
     pub selection: Option<DiffKey>,
     /// Flattened rows for the center diff view; `None` while a reply is in
     /// flight.
-    pub diff: Option<DiffView>,
-    /// Raw diff of the selected commit: feeds the right-panel file list and
+    pub diff: Option<Arc<DiffView>>,
+    /// Prepared diff of the selected commit: feeds the right-panel file list and
     /// per-file diff views. Set when a `DiffKey::Commit` reply arrives.
-    pub commit_diff: Option<DiffData>,
+    pub commit_diff: Option<PreparedDiff>,
     /// File from `commit_diff` open in the center diff view; `None` keeps
     /// the graph visible.
     pub commit_file: Option<String>,
@@ -521,6 +525,7 @@ pub struct PendingMerge {
 /// counter (and with it every busy indicator) stays honest.
 pub struct GitGudApp {
     worker: GitWorker,
+    diff_worker: DiffWorker,
     tabs: Vec<RepoTab>,
     active: usize,
     next_id: RepoId,
@@ -564,6 +569,7 @@ impl GitGudApp {
         theme::apply(&cc.egui_ctx);
         let mut app = Self {
             worker: GitWorker::spawn(cc.egui_ctx.clone()),
+            diff_worker: DiffWorker::spawn(cc.egui_ctx.clone()),
             tabs: Vec::new(),
             active: 0,
             next_id: 0,
@@ -758,6 +764,28 @@ impl GitGudApp {
         .ok();
     }
 
+    fn handle_prepared_diff(&mut self, reply: PreparedReply) {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == reply.id) else {
+            return;
+        };
+        t.in_flight = t.in_flight.saturating_sub(1);
+        if t.selection.as_ref() != Some(&reply.key) {
+            return;
+        }
+        match reply.view {
+            PreparedSelection::Workdir(view) => t.diff = Some(view),
+            PreparedSelection::Commit(data) => {
+                if let Some(path) = &t.commit_file {
+                    t.diff = data.file_view(path);
+                    if t.diff.is_none() {
+                        t.commit_file = None;
+                    }
+                }
+                t.commit_diff = Some(data);
+            }
+        }
+    }
+
     fn handle_update(&mut self, ctx: &egui::Context, upd: Update) {
         let id = update_id(&upd);
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
@@ -878,30 +906,16 @@ impl GitGudApp {
                     Err(e) => t.log = Some((true, e)),
                 }
             }
-            Update::Diff { key, result, .. } => {
-                let t = &mut self.tabs[idx];
-                // Only accept the reply for the *current* selection.
-                if t.selection.as_ref() == Some(&key) {
+            Update::Diff { id, key, result } => {
+                // Keep the job busy until preparation finishes. Discard stale
+                // replies before doing any syntax work.
+                if self.tabs[idx].selection.as_ref() == Some(&key) {
                     match result {
-                        Ok(data) => match key {
-                            // LoadDiff is never sent with a Conflict key.
-                            DiffKey::Conflict { .. } => {}
-                            DiffKey::Workdir { .. } => t.diff = Some(DiffView::build(data)),
-                            DiffKey::Commit { .. } => {
-                                t.commit_diff = Some(data);
-                                // A file may already be open in the center
-                                // (e.g. a re-sent diff): rebuild it from the
-                                // fresh data, or drop it if the file is gone.
-                                if let Some(path) = t.commit_file.clone() {
-                                    t.diff =
-                                        DiffView::build_one(t.commit_diff.as_ref().unwrap(), &path);
-                                    if t.diff.is_none() {
-                                        t.commit_file = None;
-                                    }
-                                }
-                            }
-                        },
-                        Err(e) => t.log = Some((true, e)),
+                        Ok(data) => {
+                            self.tabs[idx].in_flight += 1;
+                            self.diff_worker.prepare(id, key, data);
+                        }
+                        Err(e) => self.tabs[idx].log = Some((true, e)),
                     }
                 }
             }
@@ -1239,6 +1253,10 @@ impl eframe::App for GitGudApp {
         let ctx = ui.ctx().clone();
         for upd in self.worker.poll() {
             self.handle_update(&ctx, upd);
+        }
+        let prepared: Vec<_> = self.diff_worker.poll().collect();
+        for reply in prepared {
+            self.handle_prepared_diff(reply);
         }
         self.poll_picker();
 

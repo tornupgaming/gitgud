@@ -81,7 +81,10 @@ fn sc(c: Color32) -> Color {
     }
 }
 
-pub struct LineHighlighter(Option<HighlightLines<'static>>);
+pub struct LineHighlighter {
+    highlighter: Option<HighlightLines<'static>>,
+    buffer: String,
+}
 
 impl LineHighlighter {
     pub fn for_path(path: &str) -> Self {
@@ -90,23 +93,28 @@ impl LineHighlighter {
             .extension()
             .and_then(|e| e.to_str())
             .and_then(|ext| a.set.find_syntax_by_extension(&ext.to_ascii_lowercase()));
-        Self(syntax.map(|s| HighlightLines::new(s, &a.theme)))
+        Self {
+            highlighter: syntax.map(|s| HighlightLines::new(s, &a.theme)),
+            buffer: String::new(),
+        }
     }
 
     /// `None` when the file's language is unknown (caller falls back to a
     /// single-colour line).
     pub fn spans(&mut self, text: &str) -> Option<Spans> {
         // Oniguruma over a multi-megabyte line (minified JS, embedded blobs)
-        // can stall the UI thread for seconds; such lines render uncoloured.
+        // can stall the parser for seconds; such lines render uncoloured.
         const LINE_CAP: usize = 4096;
         if text.len() > LINE_CAP {
             return None;
         }
-        let hl = self.0.as_mut()?;
+        let hl = self.highlighter.as_mut()?;
         // The default syntaxes are compiled expecting the newline the diff
         // collector trimmed off; restore it, then clamp spans back.
-        let buf = format!("{text}\n");
-        let regions = hl.highlight_line(&buf, &assets().set).ok()?;
+        self.buffer.clear();
+        self.buffer.push_str(text);
+        self.buffer.push('\n');
+        let regions = hl.highlight_line(&self.buffer, &assets().set).ok()?;
         let mut spans = Vec::with_capacity(regions.len());
         let mut start = 0;
         for (style, s) in regions {
@@ -129,7 +137,7 @@ mod tests {
     fn top_contender_extensions_resolve() {
         for p in ["a.rs", "a.js", "a.cs", "a.odin"] {
             assert!(
-                LineHighlighter::for_path(p).0.is_some(),
+                LineHighlighter::for_path(p).highlighter.is_some(),
                 "no syntax for {p}"
             );
         }

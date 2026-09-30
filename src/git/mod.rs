@@ -645,8 +645,8 @@ pub enum ConflictSegment {
 }
 
 /// A whole diff, pre-flattened for the UI. `adds`/`dels` are totals across
-/// all files. Line output is capped (see `ops`) so a pathological diff
-/// cannot stall the render -- a truncated diff ends with a marker line.
+/// all files. Lines, input bytes and file count are capped (see `ops`) to
+/// bound retained content -- a truncated diff ends with a marker line.
 #[derive(Debug, Clone)]
 pub struct DiffData {
     pub files: Vec<FileDiff>,
